@@ -1,0 +1,6 @@
+corpus,experiment,condition,class,fold,metric,value
+sep28k,expA_deployment,clean,Block,0,f1,0.6846
+sep28k,expA_deployment,full_chain,Block,0,f1,0.4124
+sep28k,expA_deployment,clean,Interjection,0,f1,0.7857
+sep28k,expA_deployment,full_chain,Interjection,0,f1,0.7586
+sep28k,expB_severity_bias,full_chain,all,0,mean_relative_bias,-0.3142
