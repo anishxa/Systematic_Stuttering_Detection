@@ -5,9 +5,8 @@ import yaml
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
-import krippendorff
 
-from prep import prepare_dataset, load_and_filter_sep28k
+from prep import prepare_dataset, load_and_filter_sep28k, load_config
 from extract import extract_features_for_subset
 from degrade import compute_silence_removal_statistic, load_audio_16k, process_degradation
 from train_eval import train_ovr_classifiers, evaluate_ovr_classifiers, compute_bootstrap_cis
@@ -23,8 +22,8 @@ def run_pipeline(config_path="icassp/config.yaml"):
     wall_clock = {}
     t_start_total = time.time()
     
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config(config_path)
+    hard_thresh = cfg.get("hard_thresh", 1)
         
     results_dir = cfg["paths"]["results_dir"]
     cache_dir = cfg["paths"]["cache_dir"]
@@ -47,18 +46,24 @@ def run_pipeline(config_path="icassp/config.yaml"):
     wall_clock["step1_data_prep"] = time.time() - t0
     print(f"Dataset ready with {len(df_subset)} clips across {len(df_subset['episode_id'].unique())} episodes.")
     
+    print(f"\n[STEP 1] Positive counts per class (hard_thresh = {hard_thresh}):")
+    for c in target_cols:
+        pos = int((df_subset[c] >= hard_thresh).sum())
+        print(f"  {c:15s} | Positives: {pos:4d} / {len(df_subset)} ({pos/len(df_subset)*100:.2f}%)")
+        
     # ---------------------------------------------------------
     # STEP 2: Layer Selection on Clean SEP-28k
     # ---------------------------------------------------------
     t0 = time.time()
     print("\n[STEP 2] Performing layer selection across 13 WavLM layers on clean audio...")
-    clean_feats, _ = extract_features_for_subset(df_subset, "clean", corpus="sep28k_full")
+    clean_feats, _ = extract_features_for_subset(df_subset, "clean", corpus="sep28k_full", config_path=config_path)
     
     layer_scores = []
-    best_layer = 7 # Default fallback
+    best_layer = 7
     best_macro_f1 = -1.0
     
-    layer_cache_file = os.path.join(cache_dir, "layer_selection_results.json")
+    cache_ver = cfg.get("cache_version", "v2")
+    layer_cache_file = os.path.join(cache_dir, f"layer_selection_results_{cache_ver}.json")
     if os.path.exists(layer_cache_file):
         with open(layer_cache_file) as f:
             layer_res = json.load(f)
@@ -79,8 +84,8 @@ def run_pipeline(config_path="icassp/config.yaml"):
                 X_tr = clean_feats[layer_idx][train_idx]
                 X_va = clean_feats[layer_idx][val_idx]
                 
-                clfs = train_ovr_classifiers(X_tr, df_train, target_cols, hard_thresh=2, seed=cfg["random_seed"])
-                eval_res = evaluate_ovr_classifiers(clfs, X_va, df_val, target_cols, hard_thresh=2)
+                clfs = train_ovr_classifiers(X_tr, df_train, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"])
+                eval_res = evaluate_ovr_classifiers(clfs, X_va, df_val, target_cols, hard_thresh=hard_thresh)
                 
                 m_f1 = np.mean([eval_res[c]["f1"] for c in target_cols])
                 fold_macro_f1s.append(m_f1)
@@ -99,7 +104,6 @@ def run_pipeline(config_path="icassp/config.yaml"):
     wall_clock["step2_layer_selection"] = time.time() - t0
     print(f"\n>>> Selected Layer {best_layer} (Macro F1 = {best_macro_f1:.4f}). Layer choice frozen for all experiments.")
     
-    # Plot Figure 4 (Layer Selection)
     layer_df = pd.DataFrame(layer_scores)
     plot_fig4_layer_wise_f1(layer_df, best_layer, out_pdf=os.path.join(results_dir, "fig4_layer_selection.pdf"))
     
@@ -107,36 +111,45 @@ def run_pipeline(config_path="icassp/config.yaml"):
     # STEP 3: Feature Extraction & Silence Removal across Conditions
     # ---------------------------------------------------------
     t0 = time.time()
-    print("\n[STEP 3] Extracting features and silence statistics for all degradation conditions...")
+    print("\n[STEP 3] Extracting features and clip-level silence statistics for all degradation conditions...")
     all_condition_feats = {}
-    silence_stats = {}
     
-    # Pre-extract / load clean features for layer best_layer
     X_clean_best = clean_feats[best_layer]
     all_condition_feats["clean"] = X_clean_best
-    silence_stats["clean"] = 0.0
+    
+    silence_records = []
     
     for cond in conditions:
-        if cond == "clean":
-            continue
         print(f"Processing condition: {cond}")
-        cond_feats_dict, _ = extract_features_for_subset(df_subset, cond, corpus="sep28k_full")
-        all_condition_feats[cond] = cond_feats_dict[best_layer]
-        
-        # Compute silence removal stat sample on subset of clips
-        samp_df = df_subset.head(100)
-        stats_list = []
-        for _, r in samp_df.iterrows():
+        if cond != "clean":
+            cond_feats_dict, _ = extract_features_for_subset(df_subset, cond, corpus="sep28k_full", config_path=config_path)
+            all_condition_feats[cond] = cond_feats_dict[best_layer]
+            
+        print(f"  Computing clip-level silence statistics ({len(df_subset)} clips)...")
+        for _, r in df_subset.iterrows():
             c_aud, sr = load_audio_16k(r["file_path"])
-            cached_deg = os.path.join(cfg["paths"]["degraded_audio_dir"], cond, f"{r['clip_uid']}.wav")
-            if os.path.exists(cached_deg):
-                d_aud, _ = load_audio_16k(cached_deg)
+            if cond == "clean":
+                d_aud = c_aud
             else:
-                d_aud = process_degradation(c_aud, cond, sr=sr)
-            s_stat = compute_silence_removal_statistic(c_aud, d_aud, sr=sr)
-            stats_list.append(s_stat)
-        silence_stats[cond] = float(np.mean(stats_list))
-        print(f"  Condition {cond:15s} | Silence removal stat: {silence_stats[cond]:.4f}")
+                cached_deg = os.path.join(cfg["paths"]["degraded_audio_dir"], cond, f"{r['clip_uid']}.wav")
+                if os.path.exists(cached_deg):
+                    d_aud, _ = load_audio_16k(cached_deg)
+                else:
+                    d_aud = process_degradation(c_aud, cond, sr=sr)
+            stats = compute_silence_removal_statistic(c_aud, d_aud, sr=sr)
+            silence_records.append({
+                "clip_uid": r["clip_uid"],
+                "condition": cond,
+                "silence_removed_frac": stats["silence_removed_frac"],
+                "duration_reduction_frac": stats["duration_reduction_frac"]
+            })
+            
+    df_silence = pd.DataFrame(silence_records)
+    df_silence.to_csv(os.path.join(results_dir, "silence_stats.csv"), index=False)
+    
+    cond_silence_means = df_silence.groupby("condition")["silence_removed_frac"].mean().to_dict()
+    for cond in conditions:
+        print(f"  Condition {cond:15s} | Mean Silence Removal: {cond_silence_means[cond]:.4f}")
         
     wall_clock["step3_feature_extraction"] = time.time() - t0
     
@@ -147,11 +160,9 @@ def run_pipeline(config_path="icassp/config.yaml"):
     print("\n[STEP 4] Executing Experiment A (Front-End Degradation & Mechanism Analysis)...")
     
     tidy_rows = []
-    scatter_rows = []
     clean_predictions_by_fold = {}
     degraded_predictions_by_fold = {}
     
-    # Train on clean, test on all conditions (5-fold CV)
     for fold in range(cfg["n_folds"]):
         df_train = df_subset[df_subset["fold"] != fold].reset_index(drop=True)
         df_test = df_subset[df_subset["fold"] == fold].reset_index(drop=True)
@@ -162,20 +173,20 @@ def run_pipeline(config_path="icassp/config.yaml"):
         X_tr_clean = all_condition_feats["clean"][tr_idx]
         X_te_clean = all_condition_feats["clean"][te_idx]
         
-        clfs_clean = train_ovr_classifiers(X_tr_clean, df_train, target_cols, hard_thresh=2, seed=cfg["random_seed"])
-        eval_clean_fold = evaluate_ovr_classifiers(clfs_clean, X_te_clean, df_test, target_cols, hard_thresh=2)
+        clfs_clean = train_ovr_classifiers(X_tr_clean, df_train, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"])
+        eval_clean_fold = evaluate_ovr_classifiers(clfs_clean, X_te_clean, df_test, target_cols, hard_thresh=hard_thresh)
         clean_predictions_by_fold[fold] = (df_test, eval_clean_fold)
         
         for cond in conditions:
             X_te_cond = all_condition_feats[cond][te_idx]
             
-            # Train clean -> test degraded (Deployment)
-            eval_dep = evaluate_ovr_classifiers(clfs_clean, X_te_cond, df_test, target_cols, hard_thresh=2)
+            # Deployment evaluation (Train clean -> test degraded)
+            eval_dep = evaluate_ovr_classifiers(clfs_clean, X_te_cond, df_test, target_cols, hard_thresh=hard_thresh)
             
-            # Also train matched condition -> test degraded (Upper bound)
+            # Matched condition evaluation (Upper bound)
             X_tr_cond = all_condition_feats[cond][tr_idx]
-            clfs_matched = train_ovr_classifiers(X_tr_cond, df_train, target_cols, hard_thresh=2, seed=cfg["random_seed"])
-            eval_matched = evaluate_ovr_classifiers(clfs_matched, X_te_cond, df_test, target_cols, hard_thresh=2)
+            clfs_matched = train_ovr_classifiers(X_tr_cond, df_train, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"])
+            eval_matched = evaluate_ovr_classifiers(clfs_matched, X_te_cond, df_test, target_cols, hard_thresh=hard_thresh)
             
             if cond not in degraded_predictions_by_fold:
                 degraded_predictions_by_fold[cond] = {}
@@ -198,23 +209,51 @@ def run_pipeline(config_path="icassp/config.yaml"):
     df_tidy = pd.DataFrame(tidy_rows)
     df_tidy.to_csv(os.path.join(results_dir, "all_metrics.csv"), index=False)
     
-    # Compute average metrics and CIs across folds for visualization
+    n_distinct_combos = len(df_tidy[["condition", "class", "fold"]].drop_duplicates())
+    print(f"[all_metrics.csv] Saved {len(df_tidy)} rows ({n_distinct_combos} distinct condition-class-fold combinations).")
+    
+    # Compute summary metrics across folds & bootstrap CIs
     fig1_summary = []
+    scatter_rows = []
+    
     for cond in conditions:
+        # Concatenate test predictions across folds for episode-level bootstrap CIs
+        all_test_folds = []
+        all_cond_results = {c: {"preds": [], "probs": [], "y_true": []} for c in target_cols}
+        for fold in range(cfg["n_folds"]):
+            df_t, eval_d = degraded_predictions_by_fold[cond][fold]
+            all_test_folds.append(df_t)
+            for c in target_cols:
+                all_cond_results[c]["preds"].append(eval_d[c]["preds"])
+                all_cond_results[c]["probs"].append(eval_d[c]["probs"])
+                all_cond_results[c]["y_true"].append(eval_d[c]["y_true"])
+                
+        df_concat_test = pd.concat(all_test_folds).reset_index(drop=True)
+        concat_eval = {
+            c: {
+                "preds": np.concatenate(all_cond_results[c]["preds"]),
+                "probs": np.concatenate(all_cond_results[c]["probs"]),
+                "y_true": np.concatenate(all_cond_results[c]["y_true"])
+            }
+            for c in target_cols
+        }
+        
+        ci_res = compute_bootstrap_cis(df_concat_test, concat_eval, target_cols, n_resamples=cfg.get("n_bootstrap", 1000), seed=cfg["random_seed"])
+        
         for c in target_cols:
             vals = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
             mean_val = float(vals.mean())
-            ci_low = float(np.percentile(vals, 5))
-            ci_high = float(np.percentile(vals, 95))
+            ci_low = ci_res[c]["f1_ci_low"]
+            ci_high = ci_res[c]["f1_ci_high"]
+            
             fig1_summary.append({
                 "condition": cond, "class": c, "f1": mean_val, "f1_ci_low": ci_low, "f1_ci_high": ci_high
             })
             
-            # Compute F1 drop relative to clean mean
-            clean_val = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == "clean") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
-            f1_drop = clean_val - mean_val
+            clean_mean = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == "clean") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
+            f1_drop = clean_mean - mean_val
             scatter_rows.append({
-                "condition": cond, "class": c, "f1_drop": f1_drop, "silence_removal_stat": silence_stats[cond]
+                "condition": cond, "class": c, "f1_drop": f1_drop, "silence_removal_stat": cond_silence_means[cond]
             })
             
     df_fig1 = pd.DataFrame(fig1_summary)
@@ -231,7 +270,6 @@ def run_pipeline(config_path="icassp/config.yaml"):
     t0 = time.time()
     print("\n[STEP 5] Executing Experiment B (Severity Bias Analysis)...")
     
-    # Combine predictions across test folds for clean and full_chain
     all_test_dfs = []
     all_clean_preds = {c: [] for c in target_cols}
     all_fc_preds = {c: [] for c in target_cols}
@@ -249,10 +287,13 @@ def run_pipeline(config_path="icassp/config.yaml"):
     concat_clean_preds = {c: np.concatenate(all_clean_preds[c]) for c in target_cols}
     concat_fc_preds = {c: np.concatenate(all_fc_preds[c]) for c in target_cols}
     
-    bias_res = compute_severity_bias_across_episodes(df_all_test, concat_clean_preds, concat_fc_preds, target_cols)
+    bias_res = compute_severity_bias_across_episodes(
+        df_all_test, concat_clean_preds, concat_fc_preds, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"]
+    )
     
-    print(f"\n[severity] Mean Relative Bias across episodes: {bias_res['mean_bias']*100:.2f}% (95% CI: [{bias_res['mean_bias_ci'][0]*100:.2f}%, {bias_res['mean_bias_ci'][1]*100:.2f}%])")
-    print(f"[severity] Correlation r with GT Block Rate:   r = {bias_res['corr_bias_gt_blocks_r']:.3f} (p = {bias_res['corr_bias_gt_blocks_p']:.4e})")
+    print(f"\n[severity] Relative Bias vs Clean: {bias_res['mean_bias']*100:.2f}% (95% CI: [{bias_res['mean_bias_ci'][0]*100:.2f}%, {bias_res['mean_bias_ci'][1]*100:.2f}%])")
+    print(f"[severity] Relative Bias vs GT:    {bias_res['mean_bias_vs_gt']*100:.2f}% (95% CI: [{bias_res['mean_bias_gt_ci'][0]*100:.2f}%, {bias_res['mean_bias_gt_ci'][1]*100:.2f}%])")
+    print(f"[severity] Correlation r (bias vs clean vs GT block rate): r = {bias_res['corr_bias_gt_blocks_r']:.3f} (p = {bias_res['corr_bias_gt_blocks_p']:.4e})")
     
     plot_fig3_severity_bias_dist(
         bias_res["df_episode_bias"],
@@ -262,6 +303,19 @@ def run_pipeline(config_path="icassp/config.yaml"):
         out_pdf=os.path.join(results_dir, "fig3_severity_bias_dist.pdf")
     )
     
+    bias_summary = {
+        "mean_bias_vs_clean": bias_res["mean_bias"],
+        "mean_bias_vs_clean_ci": list(bias_res["mean_bias_ci"]),
+        "mean_bias_vs_gt": bias_res["mean_bias_vs_gt"],
+        "mean_bias_vs_gt_ci": list(bias_res["mean_bias_gt_ci"]),
+        "corr_bias_gt_blocks_r": bias_res["corr_bias_gt_blocks_r"],
+        "corr_bias_gt_blocks_p": bias_res["corr_bias_gt_blocks_p"],
+        "spearman_rho": bias_res["spearman_rho"],
+        "spearman_p": bias_res["spearman_p"]
+    }
+    with open(os.path.join(results_dir, "severity_bias_results.json"), "w") as f:
+        json.dump(bias_summary, f, indent=2)
+        
     wall_clock["step5_experiment_B"] = time.time() - t0
     
     # ---------------------------------------------------------
@@ -279,10 +333,11 @@ def run_pipeline(config_path="icassp/config.yaml"):
     X_te_cs_clean = all_condition_feats["clean"][te_cs_idx]
     X_te_cs_fc = all_condition_feats["full_chain"][te_cs_idx]
     
-    clfs_cs = train_ovr_classifiers(X_tr_cs_clean, df_train_cs, target_cols, hard_thresh=2, seed=cfg["random_seed"])
-    eval_cs_clean = evaluate_ovr_classifiers(clfs_cs, X_te_cs_clean, df_test_cs, target_cols, hard_thresh=2)
-    eval_cs_fc = evaluate_ovr_classifiers(clfs_cs, X_te_cs_fc, df_test_cs, target_cols, hard_thresh=2)
+    clfs_cs = train_ovr_classifiers(X_tr_cs_clean, df_train_cs, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"])
+    eval_cs_clean = evaluate_ovr_classifiers(clfs_cs, X_te_cs_clean, df_test_cs, target_cols, hard_thresh=hard_thresh)
+    eval_cs_fc = evaluate_ovr_classifiers(clfs_cs, X_te_cs_fc, df_test_cs, target_cols, hard_thresh=hard_thresh)
     
+    cs_summary = {}
     print("\n" + "-" * 55)
     print("Cross-Show Held-Out Performance (HVSA & MyStutteringLife):")
     print(f"{'Class':15s} | {'Clean F1':10s} | {'FullChain F1':12s} | {'F1 Drop':10s}")
@@ -291,35 +346,14 @@ def run_pipeline(config_path="icassp/config.yaml"):
         f1_c = eval_cs_clean[c]["f1"]
         f1_f = eval_cs_fc[c]["f1"]
         drop = f1_c - f1_f
+        cs_summary[c] = {"clean_f1": f1_c, "full_chain_f1": f1_f, "f1_drop": drop}
         print(f"{c:15s} | {f1_c:10.4f} | {f1_f:12.4f} | {drop:10.4f}")
     print("-" * 55)
     
-    wall_clock["step6_experiment_C"] = time.time() - t0
-    
-    # ---------------------------------------------------------
-    # STEP 7: Supporting Section — Annotator Disagreement
-    # ---------------------------------------------------------
-    t0 = time.time()
-    print("\n[STEP 7] Supporting Section: Annotator Disagreement Analysis...")
-    
-    # Krippendorff's alpha per class on raw counts
-    alphas = {}
-    for c in target_cols:
-        raw_counts = df_subset[c].values
-        # Create matrix for krippendorff's alpha (simplified 2-rater proxy or count variance)
-        # Using raw count distribution across clips
-        try:
-            # Format reliability matrix: 2 pseudo-raters split from count
-            r1 = (raw_counts >= 1).astype(int)
-            r2 = (raw_counts >= 2).astype(int)
-            reliability_data = np.array([r1, r2])
-            alpha_val = float(krippendorff.alpha(reliability_data=reliability_data, level_of_measurement='nominal'))
-        except Exception:
-            alpha_val = 0.5
-        alphas[c] = alpha_val
-        print(f"  {c:15s} | Krippendorff's alpha proxy: {alpha_val:.4f}")
+    with open(os.path.join(results_dir, "cross_show_results.json"), "w") as f:
+        json.dump(cs_summary, f, indent=2)
         
-    wall_clock["step7_disagreement"] = time.time() - t0
+    wall_clock["step6_experiment_C"] = time.time() - t0
     
     # Save wall clock log
     wall_clock["total_seconds"] = time.time() - t_start_total

@@ -95,4 +95,4 @@ Vector PDF plots are saved in `icassp/results/`:
 
 ## License & Citation
 
-Licensed under MIT. When referencing this benchmark or thesis, please cite the ICASSP 2026 paper.
+Licensed under MIT. When referencing this benchmark or thesis, please cite the ICASSP 2027 paper submission.
