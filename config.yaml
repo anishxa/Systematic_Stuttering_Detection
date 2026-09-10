@@ -1,0 +1,32 @@
+paths:
+  raw_labels_path: "/Users/anishapattanayak/Documents/SLT/Dysfluency-Aware-Endpointing/data/SEP-28k_labels.csv"
+  raw_clips_dir: "/Users/anishapattanayak/Documents/SLT/Dysfluency-Aware-Endpointing/clips"
+  base_dir: "/Users/anishapattanayak/Documents/SLT/icassp"
+  cache_dir: "/Users/anishapattanayak/Documents/SLT/icassp/cache"
+  degraded_audio_dir: "/Users/anishapattanayak/Documents/SLT/icassp/cache/degraded_audio"
+  results_dir: "/Users/anishapattanayak/Documents/SLT/icassp/results"
+
+model:
+  encoder: "microsoft/wavlm-base-plus"
+  sample_rate: 16000
+  batch_size: 16
+
+random_seed: 42
+n_folds: 5
+n_bootstrap: 1000
+
+stutter_classes:
+  - Block
+  - Prolongation
+  - SoundRep
+  - WordRep
+  - Interjection
+
+degradation_conditions:
+  - clean
+  - opus_16k
+  - opus_8k
+  - opus_16k_dtx
+  - vad_agg3
+  - denoise
+  - full_chain
