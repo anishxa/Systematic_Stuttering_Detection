@@ -6,8 +6,28 @@ import numpy as np
 from sklearn.model_selection import GroupKFold
 
 def load_config(config_path="icassp/config.yaml"):
+    if not os.path.exists(config_path):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        alt_path = os.path.join(script_dir, os.path.basename(config_path))
+        if os.path.exists(alt_path):
+            config_path = alt_path
+            
     with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+        
+    config_dir = os.path.dirname(os.path.abspath(config_path))
+    local_cfg_path = os.path.join(config_dir, "config.local.yaml")
+    if os.path.exists(local_cfg_path):
+        with open(local_cfg_path, "r") as f:
+            local_cfg = yaml.safe_load(f)
+            if local_cfg:
+                if "paths" in local_cfg and "paths" in cfg:
+                    cfg["paths"].update(local_cfg["paths"])
+                for k, v in local_cfg.items():
+                    if k != "paths":
+                        cfg[k] = v
+                        
+    return cfg
 
 def load_and_filter_sep28k(config):
     labels_path = config["paths"]["raw_labels_path"]
@@ -38,15 +58,16 @@ def load_and_filter_sep28k(config):
 
 def build_working_subset(df, config, subset_size=8000, seed=42):
     np.random.seed(seed)
+    hard_thresh = config.get("hard_thresh", 1)
     
-    # Subsets by positivity (count >= 1)
-    is_block = df["Block"] >= 1
-    is_prol = df["Prolongation"] >= 1
-    is_sound = df["SoundRep"] >= 1
-    is_word = df["WordRep"] >= 1
-    is_interj = df["Interjection"] >= 1
+    # Subsets by positivity (count >= hard_thresh)
+    is_block = df["Block"] >= hard_thresh
+    is_prol = df["Prolongation"] >= hard_thresh
+    is_sound = df["SoundRep"] >= hard_thresh
+    is_word = df["WordRep"] >= hard_thresh
+    is_interj = df["Interjection"] >= hard_thresh
     
-    # All positives for rare / target classes
+    # All positives for target classes
     stutter_positives = df[is_block | is_prol | is_sound | is_word | is_interj].copy()
     fluent_only = df[~(is_block | is_prol | is_sound | is_word | is_interj)].copy()
     
@@ -74,7 +95,6 @@ def add_group_kfold_splits(df, n_folds=5, seed=42):
 def add_cross_show_splits(df):
     """Fallback split for Exp C: Cross-show split."""
     shows = sorted(df["Show"].unique())
-    # Reserve two shows for held-out test (e.g., HVSA and MyStutteringLife)
     held_out_shows = ["HVSA", "MyStutteringLife"]
     df["cross_show_split"] = df["Show"].apply(lambda s: "test" if s in held_out_shows else "train")
     return df
@@ -94,7 +114,7 @@ def prepare_dataset(config_path="icassp/config.yaml", subset_csv=None, seed=42):
     print("[prep] Filtering SEP-28k and creating working subset...")
     raw_df = load_and_filter_sep28k(config)
     subset_df = build_working_subset(raw_df, config, subset_size=8000, seed=seed)
-    subset_df = add_group_kfold_splits(subset_df, n_folds=config["n_folds"], seed=seed)
+    subset_df = add_group_kfold_splits(subset_df, n_folds=config.get("n_folds", 5), seed=seed)
     subset_df = add_cross_show_splits(subset_df)
     
     subset_df.to_csv(subset_csv, index=False)

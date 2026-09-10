@@ -7,6 +7,7 @@ import pandas as pd
 from tqdm import tqdm
 from transformers import WavLMModel, AutoFeatureExtractor
 from degrade import load_audio_16k, process_degradation, generate_and_cache_degraded_audio
+from prep import load_config
 
 def get_device():
     if torch.backends.mps.is_available():
@@ -31,25 +32,23 @@ def get_wavlm_model(model_name="microsoft/wavlm-base-plus"):
     return _WAVLM_MODEL, _FEATURE_EXTRACTOR, device
 
 def extract_features_for_subset(df, condition, corpus="sep28k", config_path="icassp/config.yaml", force_reextract=False):
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
-        
+    cfg = load_config(config_path)
     cache_dir = cfg["paths"]["cache_dir"]
     degraded_dir = cfg["paths"]["degraded_audio_dir"]
     os.makedirs(cache_dir, exist_ok=True)
     
-    n_layers = 13 # WavLM base has 13 hidden state outputs
+    cache_ver = cfg.get("cache_version", "v2")
+    n_layers = 13
     clip_uids = df["clip_uid"].tolist()
-    index_file = os.path.join(cache_dir, f"{corpus}_{condition}_clip_ids.json")
+    index_file = os.path.join(cache_dir, f"{corpus}_{condition}_{cache_ver}_clip_ids.json")
     
-    # Check cache
     cached_layer_files = [
-        os.path.join(cache_dir, f"{corpus}_{condition}_layer{l}.npy")
+        os.path.join(cache_dir, f"{corpus}_{condition}_{cache_ver}_layer{l}.npy")
         for l in range(n_layers)
     ]
     
     if not force_reextract and os.path.exists(index_file) and all(os.path.exists(f) for f in cached_layer_files):
-        print(f"[extract] Cache hit for corpus={corpus}, condition={condition}. Loading from disk...")
+        print(f"[extract] Cache hit for corpus={corpus}, condition={condition} ({cache_ver}). Loading from disk...")
         layer_dict = {}
         for l in range(n_layers):
             layer_dict[l] = np.load(cached_layer_files[l])
@@ -63,7 +62,6 @@ def extract_features_for_subset(df, condition, corpus="sep28k", config_path="ica
     layer_feats = {l: [] for l in range(n_layers)}
     batch_size = cfg["model"].get("batch_size", 16)
     
-    # Process clips
     audios = []
     processed_uids = []
     
@@ -85,10 +83,8 @@ def extract_features_for_subset(df, condition, corpus="sep28k", config_path="ica
         audios.append(audio)
         processed_uids.append(uid)
         
-    # Extract features in batches
     for i in range(0, len(audios), batch_size):
         batch_audios = audios[i : i + batch_size]
-        # Enforce exact 3.0s (48,000 samples at 16kHz) for uniform tensor shapes
         target_samples = 48000
         padded = np.zeros((len(batch_audios), target_samples), dtype=np.float32)
         for b_idx, a in enumerate(batch_audios):
@@ -101,14 +97,12 @@ def extract_features_for_subset(df, condition, corpus="sep28k", config_path="ica
         
         with torch.no_grad():
             outputs = model(inputs, output_hidden_states=True)
-            hidden_states = outputs.hidden_states # Tuple of 13 tensors (B, T_frames, 768)
+            hidden_states = outputs.hidden_states
             
             for l_idx, hs in enumerate(hidden_states):
-                # Mean pool across frame dimension T_frames
                 pooled = hs.mean(dim=1).cpu().numpy()
                 layer_feats[l_idx].append(pooled)
                 
-    # Concatenate all batches
     final_layer_dict = {}
     for l in range(n_layers):
         final_layer_dict[l] = np.concatenate(layer_feats[l], axis=0)
@@ -123,11 +117,3 @@ def extract_features_for_subset(df, condition, corpus="sep28k", config_path="ica
 def sf_write_audio(path, audio, sr):
     import soundfile as sf
     sf.write(path, audio, sr)
-
-if __name__ == "__main__":
-    from prep import prepare_dataset
-    df = prepare_dataset()
-    sample_df = df.head(10)
-    feats, uids = extract_features_for_subset(sample_df, "clean", corpus="test_sample")
-    print("Extracted layer 0 shape:", feats[0].shape)
-    print("Extracted layer 12 shape:", feats[12].shape)
