@@ -2,7 +2,7 @@
 
 This repository contains the empirical benchmark, experimental pipeline, audio degradation suite, and figure generation code for the ICASSP paper submission on **SEP-28k stuttering detection**.
 
-> **Thesis**: Deployment audio front-ends (codecs, VAD, noise suppression, AGC, DTX) degrade stutter classes in inverse proportion to their acoustic salience — silence-based events (blocks, prolongations) are erased while lexical ones (interjections) survive — and this asymmetry causes automated speech evaluation systems to systematically under-report stuttering severity.
+> **Thesis**: Deployment audio front-ends (codecs, VAD, noise suppression, AGC, DTX) selectively erase **silent blocks** — the sole stutter class defined by the total absence of acoustic energy — while voiced stuttering (prolongations, repetitions) and lexical dysfluencies (interjections) remain acoustically salient and resilient. This selective erasure of silent blocks causes automated speech evaluation systems to systematically under-report stuttering severity for speakers who block.
 
 ---
 
