@@ -31,7 +31,7 @@ degradation_conditions:
   - opus_16k_dtx
   - vad_agg3
   - vad_zero
-  - endpoint_300ms
-  - endpoint_500ms
+  - endpoint_800ms
+  - endpoint_1200ms
   - denoise
   - full_chain

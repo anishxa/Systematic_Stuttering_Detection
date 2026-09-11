@@ -74,7 +74,7 @@ def apply_vad(audio, sr=16000, mode=3, remove=True, hangover_frames=0):
                 out_audio[i * n : (i + 1) * n] = 0.0
         return out_audio.astype(np.float32)
 
-def apply_endpoint_truncate(audio, sr=16000, silence_thresh_ms=300, mode=2, frame_ms=30):
+def apply_endpoint_truncate(audio, sr=16000, silence_thresh_ms=800, mode=1, frame_ms=30):
     vad = webrtcvad.Vad(mode)
     n = int(sr * frame_ms / 1000)
     pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
@@ -126,10 +126,10 @@ def process_degradation(audio, condition, sr=16000):
         deg = apply_vad(audio, sr, mode=3, remove=True)
     elif condition == "vad_zero":
         deg = apply_vad(audio, sr, mode=3, remove=False)
-    elif condition == "endpoint_300ms":
-        deg = apply_endpoint_truncate(audio, sr, silence_thresh_ms=300, mode=2)
-    elif condition == "endpoint_500ms":
-        deg = apply_endpoint_truncate(audio, sr, silence_thresh_ms=500, mode=2)
+    elif condition == "endpoint_800ms":
+        deg = apply_endpoint_truncate(audio, sr, silence_thresh_ms=800, mode=1)
+    elif condition == "endpoint_1200ms":
+        deg = apply_endpoint_truncate(audio, sr, silence_thresh_ms=1200, mode=1)
     elif condition == "denoise":
         deg = apply_denoise(audio, sr)
     elif condition == "agc":
