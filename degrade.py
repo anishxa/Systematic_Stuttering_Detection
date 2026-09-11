@@ -29,7 +29,7 @@ def apply_opus(audio, sr=16000, bitrate="16k", dtx=False):
         
         cmd = ["ffmpeg", "-y", "-i", in_wav, "-c:a", "libopus", "-b:a", bitrate]
         if dtx:
-            cmd.extend(["-application", "voip", "-dtx", "1"])
+            cmd.extend(["-application", "voip"])
         else:
             cmd.extend(["-application", "audio"])
         cmd.append(out_ogg)
@@ -74,32 +74,20 @@ def apply_vad(audio, sr=16000, mode=3, remove=True, hangover_frames=0):
                 out_audio[i * n : (i + 1) * n] = 0.0
         return out_audio.astype(np.float32)
 
-def apply_endpoint_truncate(audio, sr=16000, silence_thresh_ms=300, frame_ms=20):
+def apply_endpoint_truncate(audio, sr=16000, silence_thresh_ms=300, mode=2, frame_ms=30):
+    vad = webrtcvad.Vad(mode)
     n = int(sr * frame_ms / 1000)
-    num_frames = len(audio) // n
-    if num_frames == 0:
-        return audio.astype(np.float32)
-        
-    rms = np.array([np.sqrt(np.mean(audio[i * n : (i + 1) * n] ** 2) + 1e-12) for i in range(num_frames)])
-    thresh = max(0.01, np.percentile(rms, 30))
-    is_silent = rms <= thresh
-    
-    consec_frames_thresh = max(1, int(np.ceil(silence_thresh_ms / frame_ms)))
-    
-    consec = 0
-    cut_frame = None
-    for i, s in enumerate(is_silent):
-        if s:
-            consec += 1
-            if consec >= consec_frames_thresh:
-                cut_frame = i - consec_frames_thresh + 1
-                break
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+    need = max(1, int(np.ceil(silence_thresh_ms / frame_ms)))
+    consec, seen_speech = 0, False
+    for i in range(len(pcm) // n):
+        frame_bytes = pcm[i * n : (i + 1) * n].tobytes()
+        if vad.is_speech(frame_bytes, sr):
+            seen_speech, consec = True, 0
         else:
-            consec = 0
-            
-    if cut_frame is not None:
-        cut_sample = cut_frame * n
-        return audio[:cut_sample].astype(np.float32)
+            consec += 1
+            if seen_speech and consec >= need:
+                return audio[: (i - need + 1) * n].astype(np.float32)
     return audio.astype(np.float32)
 
 def ensure_min_duration(audio, sr=16000, min_ms=400):
@@ -127,7 +115,7 @@ def apply_agc(audio, sr=16000, target_lufs=-23.0):
 
 def process_degradation(audio, condition, sr=16000):
     if condition == "clean":
-        deg = audio
+        deg = audio.astype(np.float32)
     elif condition == "opus_16k":
         deg = apply_opus(audio, sr, bitrate="16k", dtx=False)
     elif condition == "opus_8k":
@@ -139,9 +127,9 @@ def process_degradation(audio, condition, sr=16000):
     elif condition == "vad_zero":
         deg = apply_vad(audio, sr, mode=3, remove=False)
     elif condition == "endpoint_300ms":
-        deg = apply_endpoint_truncate(audio, sr, silence_thresh_ms=300)
+        deg = apply_endpoint_truncate(audio, sr, silence_thresh_ms=300, mode=2)
     elif condition == "endpoint_500ms":
-        deg = apply_endpoint_truncate(audio, sr, silence_thresh_ms=500)
+        deg = apply_endpoint_truncate(audio, sr, silence_thresh_ms=500, mode=2)
     elif condition == "denoise":
         deg = apply_denoise(audio, sr)
     elif condition == "agc":
@@ -154,23 +142,29 @@ def process_degradation(audio, condition, sr=16000):
     else:
         raise ValueError(f"Unknown condition: {condition}")
         
-    padded_audio, _ = ensure_min_duration(deg, sr=sr, min_ms=400)
-    return padded_audio
+    deg_unpadded = deg.astype(np.float32)
+    min_samples = int(sr * 0.4)
+    was_padded = len(deg_unpadded) < min_samples
+    return deg_unpadded, was_padded
+
+def _frame_rms(x, sr, frame_ms):
+    n = int(sr * frame_ms / 1000)
+    if len(x) < n:
+        return np.array([])
+    return np.array([np.sqrt(np.mean(x[i * n : (i + 1) * n] ** 2) + 1e-12) for i in range(len(x) // n)])
 
 def compute_silence_removal_statistic(clean, degraded, sr=16000, frame_ms=20):
-    def silent_seconds(x):
-        n = int(sr * frame_ms / 1000)
-        if len(x) < n:
-            return 0.0, max(len(x) / sr, 1e-6)
-        rms = np.array([np.sqrt(np.mean(x[i * n : (i + 1) * n] ** 2) + 1e-12) for i in range(len(x) // n)])
-        thr = max(0.01, np.percentile(rms, 30))
-        return (rms <= thr).sum() * frame_ms / 1000.0, len(x) / sr
-
-    sil_c, dur_c = silent_seconds(clean)
-    sil_d, dur_d = silent_seconds(degraded)
+    rms_c = _frame_rms(clean, sr, frame_ms)
+    rms_d = _frame_rms(degraded, sr, frame_ms)
+    if rms_c.size == 0:
+        return {"silence_removed_frac": 0.0, "duration_reduction_frac": 0.0, "silence_thresh": 0.0}
+    thr = max(0.01, float(np.percentile(rms_c, 30)))
+    sil_c = (rms_c <= thr).sum() * frame_ms / 1000.0
+    sil_d = (rms_d <= thr).sum() * frame_ms / 1000.0
     return {
-        "silence_removed_frac": float(1.0 - (sil_d / max(sil_c, 1e-6))),
-        "duration_reduction_frac": float(1.0 - (dur_d / max(dur_c, 1e-6))),
+        "silence_removed_frac": float(np.clip(1.0 - sil_d / max(sil_c, 1e-6), 0.0, 1.0)),
+        "duration_reduction_frac": float(np.clip(1.0 - (len(degraded) / sr) / max(len(clean) / sr, 1e-6), 0.0, 1.0)),
+        "silence_thresh": thr,
     }
 
 def generate_and_cache_degraded_audio(clip_row, condition, degraded_dir):
@@ -179,9 +173,12 @@ def generate_and_cache_degraded_audio(clip_row, condition, degraded_dir):
     os.makedirs(os.path.dirname(out_wav), exist_ok=True)
     
     if os.path.exists(out_wav):
-        return out_wav
+        deg_audio, sr = load_audio_16k(out_wav)
+        min_samples = int(sr * 0.4)
+        was_padded = len(deg_audio) < min_samples
+        return deg_audio, was_padded
         
     clean_audio, sr = load_audio_16k(clip_row["file_path"])
-    deg_audio = process_degradation(clean_audio, condition, sr=sr)
+    deg_audio, was_padded = process_degradation(clean_audio, condition, sr=sr)
     sf.write(out_wav, deg_audio, sr)
-    return out_wav
+    return deg_audio, was_padded

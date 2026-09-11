@@ -7,6 +7,7 @@ import pandas as pd
 from sklearn.model_selection import GroupShuffleSplit
 from prep import load_and_filter_sep28k, load_config
 from extract import extract_features_for_subset
+from degrade import load_audio_16k, process_degradation, compute_silence_removal_statistic
 from train_eval import train_ovr_classifiers, evaluate_ovr_classifiers
 
 def run_day0_gate(config_path="icassp/config.yaml"):
@@ -20,8 +21,10 @@ def run_day0_gate(config_path="icassp/config.yaml"):
     
     cache_dir = cfg["paths"]["cache_dir"]
     results_dir = cfg["paths"]["results_dir"]
+    degraded_dir = cfg["paths"]["degraded_audio_dir"]
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(results_dir, exist_ok=True)
+    os.makedirs(degraded_dir, exist_ok=True)
     
     df_raw = load_and_filter_sep28k(cfg)
     
@@ -48,11 +51,48 @@ def run_day0_gate(config_path="icassp/config.yaml"):
     print(f"[day0] Train clips: {len(df_train)} | Test clips: {len(df_test)}")
     
     target_cols = cfg["stutter_classes"]
-    print("\n[day0] Class positive counts at hard_thresh = ", hard_thresh)
+    print(f"\n[day0] Class positive counts (hard_thresh = {hard_thresh}):")
     for c in target_cols:
         tr_pos = (df_train[c] >= hard_thresh).sum()
         te_pos = (df_test[c] >= hard_thresh).sum()
         print(f"  {c:15s} | Train pos: {tr_pos:4d} / {len(df_train)} | Test pos: {te_pos:4d} / {len(df_test)}")
+        
+    # Process audio and measure un-padded statistics
+    conditions_to_check = ["clean", "full_chain", "vad_agg3", "endpoint_300ms", "endpoint_500ms"]
+    silence_stats_day0 = {}
+    retained_durations_day0 = {}
+    padding_counts_day0 = {}
+    
+    print("\n[day0] Processing audio degradation and measuring silence/duration stats...")
+    for cond in conditions_to_check:
+        sil_rem_list = []
+        ret_dur_list = []
+        padded_count = 0
+        
+        for _, r in gate_df.iterrows():
+            c_aud, sr = load_audio_16k(r["file_path"])
+            if cond == "clean":
+                d_aud = c_aud
+                was_padded = False
+            else:
+                d_aud, was_padded = process_degradation(c_aud, cond, sr=sr)
+                
+            if was_padded:
+                padded_count += 1
+                
+            stats = compute_silence_removal_statistic(c_aud, d_aud, sr=sr)
+            sil_rem_list.append(stats["silence_removed_frac"])
+            ret_dur_list.append(1.0 - stats["duration_reduction_frac"])
+            
+        silence_stats_day0[cond] = float(np.mean(sil_rem_list))
+        retained_durations_day0[cond] = float(np.mean(ret_dur_list))
+        padding_counts_day0[cond] = padded_count
+        
+        print(f"  Condition {cond:15s} | Silence Removal: {silence_stats_day0[cond]:.4f} | Retained Dur: {retained_durations_day0[cond]:.4f} | Padded Clips: {padded_count}/{len(gate_df)}")
+        
+    # Write padding counts to results
+    with open(os.path.join(results_dir, "padding_counts.json"), "w") as f:
+        json.dump(padding_counts_day0, f, indent=2)
         
     print("\n[day0] Extracting features for clean condition...")
     clean_feats, _ = extract_features_for_subset(gate_df, "clean", corpus="day0", config_path=config_path)
@@ -104,6 +144,9 @@ def run_day0_gate(config_path="icassp/config.yaml"):
         "f1_drops": {k: float(v) for k, v in f1_drops.items()},
         "clean_f1": {k: float(eval_clean[k]["f1"]) for k in target_cols},
         "full_chain_f1": {k: float(eval_fc[k]["f1"]) for k in target_cols},
+        "silence_stats": silence_stats_day0,
+        "retained_durations": retained_durations_day0,
+        "padding_counts": padding_counts_day0,
         "wall_clock_seconds": float(wall_clock)
     }
     
@@ -112,7 +155,7 @@ def run_day0_gate(config_path="icassp/config.yaml"):
         json.dump(gate_results, f, indent=2)
         
     if gate_passed:
-        print("\n>>> DECISION RULE: GATE PASSED! Blocks degrade significantly more than interjections. Proceeding with full plan.")
+        print("\n>>> DECISION RULE: GATE PASSED! Blocks degrade significantly more than interjections.")
     else:
         print("\n>>> DECISION RULE: Uniform drop across classes or gate threshold not reached.")
         

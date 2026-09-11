@@ -27,8 +27,10 @@ def run_pipeline(config_path="icassp/config.yaml"):
         
     results_dir = cfg["paths"]["results_dir"]
     cache_dir = cfg["paths"]["cache_dir"]
+    degraded_dir = cfg["paths"]["degraded_audio_dir"]
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
+    os.makedirs(degraded_dir, exist_ok=True)
     
     target_cols = cfg["stutter_classes"]
     conditions = cfg["degradation_conditions"]
@@ -62,7 +64,7 @@ def run_pipeline(config_path="icassp/config.yaml"):
     best_layer = 7
     best_macro_f1 = -1.0
     
-    cache_ver = cfg.get("cache_version", "v2")
+    cache_ver = cfg.get("cache_version", "v3")
     layer_cache_file = os.path.join(cache_dir, f"layer_selection_results_{cache_ver}.json")
     if os.path.exists(layer_cache_file):
         with open(layer_cache_file) as f:
@@ -117,7 +119,16 @@ def run_pipeline(config_path="icassp/config.yaml"):
     X_clean_best = clean_feats[best_layer]
     all_condition_feats["clean"] = X_clean_best
     
+    # Optimization: Load clean audio ONCE into memory for all clips
+    print(f"Loading {len(df_subset)} clean audio clips into memory cache once...")
+    clean_audios_cache = {}
+    for _, r in df_subset.iterrows():
+        c_aud, sr = load_audio_16k(r["file_path"])
+        clean_audios_cache[r["clip_uid"]] = (c_aud, sr)
+        
     silence_records = []
+    padding_counts = {}
+    retained_durations = {}
     
     for cond in conditions:
         print(f"Processing condition: {cond}")
@@ -126,30 +137,48 @@ def run_pipeline(config_path="icassp/config.yaml"):
             all_condition_feats[cond] = cond_feats_dict[best_layer]
             
         print(f"  Computing clip-level silence statistics ({len(df_subset)} clips)...")
+        padded_count = 0
+        ret_dur_list = []
+        
         for _, r in df_subset.iterrows():
-            c_aud, sr = load_audio_16k(r["file_path"])
+            uid = r["clip_uid"]
+            c_aud, sr = clean_audios_cache[uid]
+            
             if cond == "clean":
                 d_aud = c_aud
+                was_padded = False
             else:
-                cached_deg = os.path.join(cfg["paths"]["degraded_audio_dir"], cond, f"{r['clip_uid']}.wav")
+                cached_deg = os.path.join(degraded_dir, cond, f"{uid}.wav")
                 if os.path.exists(cached_deg):
                     d_aud, _ = load_audio_16k(cached_deg)
+                    was_padded = len(d_aud) < int(sr * 0.4)
                 else:
-                    d_aud = process_degradation(c_aud, cond, sr=sr)
+                    d_aud, was_padded = process_degradation(c_aud, cond, sr=sr)
+                    
+            if was_padded:
+                padded_count += 1
+                
             stats = compute_silence_removal_statistic(c_aud, d_aud, sr=sr)
             silence_records.append({
-                "clip_uid": r["clip_uid"],
+                "clip_uid": uid,
                 "condition": cond,
                 "silence_removed_frac": stats["silence_removed_frac"],
                 "duration_reduction_frac": stats["duration_reduction_frac"]
             })
+            ret_dur_list.append(1.0 - stats["duration_reduction_frac"])
             
+        padding_counts[cond] = padded_count
+        retained_durations[cond] = float(np.mean(ret_dur_list))
+        
     df_silence = pd.DataFrame(silence_records)
     df_silence.to_csv(os.path.join(results_dir, "silence_stats.csv"), index=False)
     
+    with open(os.path.join(results_dir, "padding_counts.json"), "w") as f:
+        json.dump(padding_counts, f, indent=2)
+        
     cond_silence_means = df_silence.groupby("condition")["silence_removed_frac"].mean().to_dict()
     for cond in conditions:
-        print(f"  Condition {cond:15s} | Mean Silence Removal: {cond_silence_means[cond]:.4f}")
+        print(f"  Condition {cond:15s} | Mean Silence Removal: {cond_silence_means[cond]:.4f} | Retained Dur: {retained_durations[cond]:.4f} | Padded Clips: {padding_counts[cond]}/{len(df_subset)}")
         
     wall_clock["step3_feature_extraction"] = time.time() - t0
     
@@ -212,12 +241,10 @@ def run_pipeline(config_path="icassp/config.yaml"):
     n_distinct_combos = len(df_tidy[["condition", "class", "fold"]].drop_duplicates())
     print(f"[all_metrics.csv] Saved {len(df_tidy)} rows ({n_distinct_combos} distinct condition-class-fold combinations).")
     
-    # Compute summary metrics across folds & bootstrap CIs
     fig1_summary = []
     scatter_rows = []
     
     for cond in conditions:
-        # Concatenate test predictions across folds for episode-level bootstrap CIs
         all_test_folds = []
         all_cond_results = {c: {"preds": [], "probs": [], "y_true": []} for c in target_cols}
         for fold in range(cfg["n_folds"]):
@@ -257,10 +284,96 @@ def run_pipeline(config_path="icassp/config.yaml"):
             })
             
     df_fig1 = pd.DataFrame(fig1_summary)
-    df_fig2 = pd.DataFrame(scatter_rows)
+    df_fig2_scatter = pd.DataFrame(scatter_rows)
+    
+    # Compute overall mechanism correlation across condition-class pairs and save to results/mechanism_results.json
+    r_mech, p_mech = pearsonr(df_fig2_scatter["silence_removal_stat"], df_fig2_scatter["f1_drop"])
+    mechanism_res = {
+        "r": float(r_mech),
+        "p": float(p_mech),
+        "n_points": len(df_fig2_scatter)
+    }
+    with open(os.path.join(results_dir, "mechanism_results.json"), "w") as f:
+        json.dump(mechanism_res, f, indent=2)
+    print(f"[mechanism] F1 Drop vs Silence Removal Correlation: r = {r_mech:.4f} (p = {p_mech:.4e})")
+    
+    # ---------------------------------------------------------
+    # Dose-Response Analysis across Quantile Bins
+    # ---------------------------------------------------------
+    print("\n[dose-response] Computing dose-response curve across silence removal quantile bins...")
+    # Merge clip silence stats with predictions
+    dose_records = []
+    n_bins = 8
+    
+    # Map clip_uid + condition -> silence_removed_frac
+    silence_dict = df_silence.set_index(["clip_uid", "condition"])["silence_removed_frac"].to_dict()
+    
+    for cond in conditions:
+        for fold in range(cfg["n_folds"]):
+            df_t, eval_d = degraded_predictions_by_fold[cond][fold]
+            for i, r in df_t.iterrows():
+                uid = r["clip_uid"]
+                s_frac = silence_dict.get((uid, cond), 0.0)
+                for c in target_cols:
+                    dose_records.append({
+                        "clip_uid": uid,
+                        "condition": cond,
+                        "class": c,
+                        "silence_removed_frac": s_frac,
+                        "y_true": eval_d[c]["y_true"][i],
+                        "pred": eval_d[c]["preds"][i]
+                    })
+                    
+    df_dose_all = pd.DataFrame(dose_records)
+    
+    # Quantile binning on silence_removed_frac
+    try:
+        df_dose_all["bin"] = pd.qcut(df_dose_all["silence_removed_frac"], q=n_bins, labels=False, duplicates='drop')
+    except Exception:
+        df_dose_all["bin"] = pd.cut(df_dose_all["silence_removed_frac"], bins=n_bins, labels=False)
+        
+    dose_summary = []
+    from sklearn.metrics import f1_score
+    rng = np.random.default_rng(cfg["random_seed"])
+    
+    for bin_idx in sorted(df_dose_all["bin"].unique()):
+        sub_bin = df_dose_all[df_dose_all["bin"] == bin_idx]
+        mean_sil = float(sub_bin["silence_removed_frac"].mean())
+        
+        for c in target_cols:
+            sub_cls = sub_bin[sub_bin["class"] == c]
+            if len(sub_cls) == 0:
+                continue
+            y_t = sub_cls["y_true"].values
+            y_p = sub_cls["pred"].values
+            
+            f1_val = float(f1_score(y_t, y_p, zero_division=0))
+            
+            # Bootstrap CI for bin F1
+            f1_boots = []
+            for _ in range(200):
+                b_idx = rng.choice(len(sub_cls), size=len(sub_cls), replace=True)
+                f1_boots.append(f1_score(y_t[b_idx], y_p[b_idx], zero_division=0))
+                
+            ci_low = float(np.percentile(f1_boots, 2.5))
+            ci_high = float(np.percentile(f1_boots, 97.5))
+            
+            dose_summary.append({
+                "bin": int(bin_idx),
+                "class": c,
+                "mean_silence_removal": mean_sil,
+                "n_samples": len(sub_cls),
+                "f1": f1_val,
+                "f1_ci_low": ci_low,
+                "f1_ci_high": ci_high
+            })
+            
+    df_dose = pd.DataFrame(dose_summary)
+    df_dose.to_csv(os.path.join(results_dir, "dose_response.csv"), index=False)
+    print(f"[dose-response] Saved {len(df_dose)} binned dose-response points to results/dose_response.csv.")
     
     plot_fig1_f1_by_condition(df_fig1, out_pdf=os.path.join(results_dir, "fig1_f1_by_condition.pdf"))
-    plot_fig2_f1drop_vs_silence(df_fig2, out_pdf=os.path.join(results_dir, "fig2_f1drop_vs_silence.pdf"))
+    plot_fig2_f1drop_vs_silence(df_fig2_scatter, out_pdf=os.path.join(results_dir, "fig2_f1drop_vs_silence.pdf"))
     
     wall_clock["step4_experiment_A"] = time.time() - t0
     

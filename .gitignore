@@ -4,6 +4,4 @@ __pycache__/
 cache/
 *.npy
 *.wav
-results/
 config.local.yaml
-
