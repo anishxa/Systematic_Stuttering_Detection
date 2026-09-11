@@ -1,0 +1,49 @@
+{
+  "gate_passed": true,
+  "block_f1_drop": 0.19626696832579188,
+  "interjection_f1_drop": 0.0020791511327789003,
+  "diff_f1_drop": 0.19418781719301298,
+  "f1_drops": {
+    "Block": 0.19626696832579188,
+    "Prolongation": -0.009552677505281493,
+    "SoundRep": 0.008261211644374544,
+    "WordRep": 0.04574529947664274,
+    "Interjection": 0.0020791511327789003
+  },
+  "clean_f1": {
+    "Block": 0.5808823529411765,
+    "Prolongation": 0.4816753926701571,
+    "SoundRep": 0.524390243902439,
+    "WordRep": 0.4935064935064935,
+    "Interjection": 0.7066246056782335
+  },
+  "full_chain_f1": {
+    "Block": 0.38461538461538464,
+    "Prolongation": 0.49122807017543857,
+    "SoundRep": 0.5161290322580645,
+    "WordRep": 0.44776119402985076,
+    "Interjection": 0.7045454545454546
+  },
+  "silence_stats": {
+    "clean": 0.0,
+    "full_chain": 0.7101070907058055,
+    "vad_agg3": 0.7715859234629777,
+    "endpoint_300ms": 0.6438761262940855,
+    "endpoint_500ms": 0.5292754793745912
+  },
+  "retained_durations": {
+    "clean": 1.0,
+    "full_chain": 0.5408933333333333,
+    "vad_agg3": 0.6001866666666666,
+    "endpoint_300ms": 0.45932,
+    "endpoint_500ms": 0.57028
+  },
+  "padding_counts": {
+    "clean": 0,
+    "full_chain": 2,
+    "vad_agg3": 2,
+    "endpoint_300ms": 532,
+    "endpoint_500ms": 445
+  },
+  "wall_clock_seconds": 437.006737947464
+}

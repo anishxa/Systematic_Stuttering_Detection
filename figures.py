@@ -1,4 +1,5 @@
 import os
+import json
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
@@ -40,23 +41,19 @@ def plot_fig1_f1_by_condition(df_metrics, out_pdf="icassp/results/fig1_f1_by_con
     
     for i, cls in enumerate(classes):
         cls_df = df_metrics[df_metrics['class'] == cls]
-        # Align with conditions order
         y_vals = []
         y_err_low = []
         y_err_high = []
         for cond in conditions:
             row = cls_df[cls_df['condition'] == cond]
-            if len(row) > 0:
-                val = row['f1'].values[0]
-                low = row.get('f1_ci_low', pd.Series([val])).values[0]
-                high = row.get('f1_ci_high', pd.Series([val])).values[0]
-                y_vals.append(val)
-                y_err_low.append(val - low)
-                y_err_high.append(high - val)
-            else:
-                y_vals.append(0.0)
-                y_err_low.append(0.0)
-                y_err_high.append(0.0)
+            if len(row) == 0:
+                raise ValueError(f"Missing metric for condition='{cond}' and class='{cls}' in Figure 1.")
+            val = row['f1'].values[0]
+            low = row.get('f1_ci_low', pd.Series([val])).values[0]
+            high = row.get('f1_ci_high', pd.Series([val])).values[0]
+            y_vals.append(val)
+            y_err_low.append(val - low)
+            y_err_high.append(high - val)
                 
         pos = x + (i - n_classes / 2 + 0.5) * bar_width
         errs = [y_err_low, y_err_high]
@@ -74,7 +71,7 @@ def plot_fig1_f1_by_condition(df_metrics, out_pdf="icassp/results/fig1_f1_by_con
     plt.close()
     print(f"[figures] Saved Figure 1 to {out_pdf}")
 
-def plot_fig2_f1drop_vs_silence(df_scatter, out_pdf="icassp/results/fig2_f1drop_vs_silence.pdf"):
+def plot_fig2_f1drop_vs_silence(df_scatter, out_pdf="icassp/results/fig2_f1drop_vs_silence.pdf", mech_json="icassp/results/mechanism_results.json"):
     """
     (b) F1 drop vs. silence-removal scatter with fit line (Main Paper Figure).
     df_scatter columns: [condition, class, f1_drop, silence_removal_stat]
@@ -95,7 +92,6 @@ def plot_fig2_f1drop_vs_silence(df_scatter, out_pdf="icassp/results/fig2_f1drop_
             edgecolors='none'
         )
         
-    # Fit line across all data
     x_all = df_scatter['silence_removal_stat'].values
     y_all = df_scatter['f1_drop'].values
     
@@ -104,9 +100,16 @@ def plot_fig2_f1drop_vs_silence(df_scatter, out_pdf="icassp/results/fig2_f1drop_
         x_grid = np.linspace(0, 1.0, 100)
         ax.plot(x_grid, m * x_grid + b, 'k--', linewidth=1.5, label='Linear fit')
         
-        # Pearson r
-        from scipy.stats import pearsonr
-        r_val, p_val = pearsonr(x_all, y_all)
+        # Single source of truth for correlation r and p
+        if os.path.exists(mech_json):
+            with open(mech_json) as f:
+                m_res = json.load(f)
+                r_val = m_res["r"]
+                p_val = m_res["p"]
+        else:
+            from scipy.stats import pearsonr
+            r_val, p_val = pearsonr(x_all, y_all)
+            
         ax.text(
             0.05, 0.90, f'$r = {r_val:.2f}$ ($p < 0.001$)' if p_val < 0.001 else f'$r = {r_val:.2f}$ ($p = {p_val:.3f}$)',
             transform=ax.transAxes, fontsize=10, bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8)
