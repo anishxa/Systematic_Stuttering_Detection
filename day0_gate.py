@@ -58,7 +58,7 @@ def run_day0_gate(config_path="icassp/config.yaml"):
         print(f"  {c:15s} | Train pos: {tr_pos:4d} / {len(df_train)} | Test pos: {te_pos:4d} / {len(df_test)}")
         
     # Process audio and measure un-padded statistics
-    conditions_to_check = ["clean", "full_chain", "vad_agg3", "endpoint_300ms", "endpoint_500ms"]
+    conditions_to_check = ["clean", "full_chain", "vad_agg3", "endpoint_800ms", "endpoint_1200ms"]
     silence_stats_day0 = {}
     retained_durations_day0 = {}
     padding_counts_day0 = {}
