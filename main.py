@@ -15,7 +15,8 @@ from figures import (
     plot_fig1_f1_by_condition,
     plot_fig2_f1drop_vs_silence,
     plot_fig3_severity_bias_dist,
-    plot_fig4_layer_wise_f1
+    plot_fig4_layer_wise_f1,
+    plot_fig5_dose_response
 )
 
 def run_pipeline(config_path="icassp/config.yaml"):
@@ -300,12 +301,9 @@ def run_pipeline(config_path="icassp/config.yaml"):
     # ---------------------------------------------------------
     # Dose-Response Analysis across Quantile Bins
     # ---------------------------------------------------------
-    print("\n[dose-response] Computing dose-response curve across silence removal quantile bins...")
-    # Merge clip silence stats with predictions
+    print("\n[dose-response] Computing dose-response curve across silence removal quantile bins (Episode Bootstrap)...")
     dose_records = []
-    n_bins = 8
     
-    # Map clip_uid + condition -> silence_removed_frac
     silence_dict = df_silence.set_index(["clip_uid", "condition"])["silence_removed_frac"].to_dict()
     
     for cond in conditions:
@@ -313,10 +311,12 @@ def run_pipeline(config_path="icassp/config.yaml"):
             df_t, eval_d = degraded_predictions_by_fold[cond][fold]
             for i, r in df_t.iterrows():
                 uid = r["clip_uid"]
+                ep_id = r["episode_id"]
                 s_frac = silence_dict.get((uid, cond), 0.0)
                 for c in target_cols:
                     dose_records.append({
                         "clip_uid": uid,
+                        "episode_id": ep_id,
                         "condition": cond,
                         "class": c,
                         "silence_removed_frac": s_frac,
@@ -326,12 +326,20 @@ def run_pipeline(config_path="icassp/config.yaml"):
                     
     df_dose_all = pd.DataFrame(dose_records)
     
-    # Quantile binning on silence_removed_frac
+    # Separate zero mass (silence_removed_frac <= 0.001) from non-zero mass (> 0.001)
+    is_zero = df_dose_all["silence_removed_frac"] <= 0.001
+    df_zero = df_dose_all[is_zero].copy()
+    df_nonzero = df_dose_all[~is_zero].copy()
+    
+    df_zero["bin"] = 0
+    n_nonzero_bins = 6
     try:
-        df_dose_all["bin"] = pd.qcut(df_dose_all["silence_removed_frac"], q=n_bins, labels=False, duplicates='drop')
+        df_nonzero["bin"] = pd.qcut(df_nonzero["silence_removed_frac"], q=n_nonzero_bins, labels=False, duplicates='drop') + 1
     except Exception:
-        df_dose_all["bin"] = pd.cut(df_dose_all["silence_removed_frac"], bins=n_bins, labels=False)
+        df_nonzero["bin"] = pd.cut(df_nonzero["silence_removed_frac"], bins=n_nonzero_bins, labels=False) + 1
         
+    df_dose_all = pd.concat([df_zero, df_nonzero]).reset_index(drop=True)
+    
     dose_summary = []
     from sklearn.metrics import f1_score
     rng = np.random.default_rng(cfg["random_seed"])
@@ -341,7 +349,7 @@ def run_pipeline(config_path="icassp/config.yaml"):
         mean_sil = float(sub_bin["silence_removed_frac"].mean())
         
         for c in target_cols:
-            sub_cls = sub_bin[sub_bin["class"] == c]
+            sub_cls = sub_bin[sub_bin["class"] == c].reset_index(drop=True)
             if len(sub_cls) == 0:
                 continue
             y_t = sub_cls["y_true"].values
@@ -349,11 +357,16 @@ def run_pipeline(config_path="icassp/config.yaml"):
             
             f1_val = float(f1_score(y_t, y_p, zero_division=0))
             
-            # Bootstrap CI for bin F1
+            # Episode-level bootstrap CI
+            episodes = sub_cls["episode_id"].unique()
+            ep_to_indices = {ep: sub_cls[sub_cls["episode_id"] == ep].index.values for ep in episodes}
             f1_boots = []
             for _ in range(200):
-                b_idx = rng.choice(len(sub_cls), size=len(sub_cls), replace=True)
-                f1_boots.append(f1_score(y_t[b_idx], y_p[b_idx], zero_division=0))
+                b_episodes = rng.choice(episodes, size=len(episodes), replace=True)
+                b_indices = np.concatenate([ep_to_indices[ep] for ep in b_episodes])
+                b_y_t = sub_cls.loc[b_indices, "y_true"].values
+                b_y_p = sub_cls.loc[b_indices, "pred"].values
+                f1_boots.append(float(f1_score(b_y_t, b_y_p, zero_division=0)))
                 
             ci_low = float(np.percentile(f1_boots, 2.5))
             ci_high = float(np.percentile(f1_boots, 97.5))
@@ -363,6 +376,7 @@ def run_pipeline(config_path="icassp/config.yaml"):
                 "class": c,
                 "mean_silence_removal": mean_sil,
                 "n_samples": len(sub_cls),
+                "n_episodes": len(episodes),
                 "f1": f1_val,
                 "f1_ci_low": ci_low,
                 "f1_ci_high": ci_high
@@ -370,10 +384,11 @@ def run_pipeline(config_path="icassp/config.yaml"):
             
     df_dose = pd.DataFrame(dose_summary)
     df_dose.to_csv(os.path.join(results_dir, "dose_response.csv"), index=False)
-    print(f"[dose-response] Saved {len(df_dose)} binned dose-response points to results/dose_response.csv.")
+    print(f"[dose-response] Saved {len(df_dose)} binned dose-response points (7 bins) to results/dose_response.csv.")
     
     plot_fig1_f1_by_condition(df_fig1, out_pdf=os.path.join(results_dir, "fig1_f1_by_condition.pdf"))
     plot_fig2_f1drop_vs_silence(df_fig2_scatter, out_pdf=os.path.join(results_dir, "fig2_f1drop_vs_silence.pdf"))
+    plot_fig5_dose_response(df_dose, out_pdf=os.path.join(results_dir, "fig5_dose_response.pdf"))
     
     wall_clock["step4_experiment_A"] = time.time() - t0
     

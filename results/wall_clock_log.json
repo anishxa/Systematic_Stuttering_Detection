@@ -1,9 +1,9 @@
 {
-  "step1_data_prep": 0.06589984893798828,
-  "step2_layer_selection": 0.43444395065307617,
-  "step3_feature_extraction": 50295.85961675644,
-  "step4_experiment_A": 196.19436287879944,
-  "step5_experiment_B": 0.3116037845611572,
-  "step6_experiment_C": 1.7703187465667725,
-  "total_seconds": 50495.49346995354
+  "step1_data_prep": 0.03419208526611328,
+  "step2_layer_selection": 0.2876763343811035,
+  "step3_feature_extraction": 187.93611001968384,
+  "step4_experiment_A": 228.08317184448242,
+  "step5_experiment_B": 0.2838871479034424,
+  "step6_experiment_C": 1.9140260219573975,
+  "total_seconds": 418.78970408439636
 }

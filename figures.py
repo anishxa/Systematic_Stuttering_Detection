@@ -182,3 +182,43 @@ def plot_fig4_layer_wise_f1(layer_df, best_layer, out_pdf="icassp/results/fig4_l
     plt.savefig(out_pdf, format='pdf', bbox_inches='tight')
     plt.close()
     print(f"[figures] Saved Figure 4 to {out_pdf}")
+
+def plot_fig5_dose_response(df_dose, out_pdf="icassp/results/fig5_dose_response.pdf"):
+    """
+    (e) Dose-response curve showing F1 vs mean silence removal fraction across quantile bins.
+    df_dose columns: [bin, class, mean_silence_removal, n_samples, f1, f1_ci_low, f1_ci_high]
+    """
+    os.makedirs(os.path.dirname(out_pdf), exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6.5, 4.2), dpi=300)
+    
+    classes = ['Block', 'SoundRep', 'WordRep', 'Prolongation', 'Interjection']
+    for cls in classes:
+        sub = df_dose[df_dose['class'] == cls].sort_values('mean_silence_removal')
+        if len(sub) == 0:
+            continue
+        x = sub['mean_silence_removal'].values
+        y = sub['f1'].values
+        y_low = sub['f1_ci_low'].values
+        y_high = sub['f1_ci_high'].values
+        
+        y_err_low = np.maximum(0, y - y_low)
+        y_err_high = np.maximum(0, y_high - y)
+        y_err = [y_err_low, y_err_high]
+        
+        ax.errorbar(
+            x, y, yerr=y_err, fmt='o-', label=cls,
+            color=PALETTE.get(cls, '#333333'), capsize=3, markersize=5, linewidth=1.5,
+            elinewidth=0.9
+        )
+        
+    ax.set_xlabel('Mean Silence Removal Fraction (Quantile Bins)', fontsize=11)
+    ax.set_ylabel('F1 Score (Episode Bootstrap 95% CI)', fontsize=11)
+    ax.set_xlim(-0.05, 1.05)
+    ax.grid(True)
+    ax.legend(frameon=True, facecolor='white', framealpha=0.9, fontsize=9, loc='lower left')
+    
+    plt.tight_layout()
+    plt.savefig(out_pdf, format='pdf', bbox_inches='tight')
+    plt.close()
+    print(f"[figures] Saved Figure 5 to {out_pdf}")
+
