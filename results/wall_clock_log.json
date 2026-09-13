@@ -1,0 +1,9 @@
+{
+  "step1_data_prep": 0.06589984893798828,
+  "step2_layer_selection": 0.43444395065307617,
+  "step3_feature_extraction": 50295.85961675644,
+  "step4_experiment_A": 196.19436287879944,
+  "step5_experiment_B": 0.3116037845611572,
+  "step6_experiment_C": 1.7703187465667725,
+  "total_seconds": 50495.49346995354
+}

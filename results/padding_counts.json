@@ -1,7 +1,10 @@
 {
   "clean": 0,
-  "full_chain": 2,
-  "vad_agg3": 2,
-  "endpoint_300ms": 532,
-  "endpoint_500ms": 445
+  "opus_16k": 0,
+  "opus_8k": 0,
+  "opus_16k_dtx": 0,
+  "vad_agg3": 32,
+  "vad_zero": 0,
+  "denoise": 0,
+  "full_chain": 33
 }

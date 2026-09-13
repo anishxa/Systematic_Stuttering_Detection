@@ -28,22 +28,22 @@
     "clean": 0.0,
     "full_chain": 0.7101070907058055,
     "vad_agg3": 0.7715859234629777,
-    "endpoint_300ms": 0.6438761262940855,
-    "endpoint_500ms": 0.5292754793745912
+    "endpoint_800ms": 0.28999411952248233,
+    "endpoint_1200ms": 0.002121662956378512
   },
   "retained_durations": {
     "clean": 1.0,
     "full_chain": 0.5408933333333333,
     "vad_agg3": 0.6001866666666666,
-    "endpoint_300ms": 0.45932,
-    "endpoint_500ms": 0.57028
+    "endpoint_800ms": 0.7490466666666666,
+    "endpoint_1200ms": 0.9982933333333334
   },
   "padding_counts": {
     "clean": 0,
     "full_chain": 2,
     "vad_agg3": 2,
-    "endpoint_300ms": 532,
-    "endpoint_500ms": 445
+    "endpoint_800ms": 317,
+    "endpoint_1200ms": 0
   },
-  "wall_clock_seconds": 437.006737947464
+  "wall_clock_seconds": 244.829274892807
 }

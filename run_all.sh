@@ -14,6 +14,9 @@ python3 day0_gate.py
 echo "[2/3] Running full experimental pipeline (Layer selection, Exp A, Exp B, Exp C)..."
 python3 main.py
 
+echo "[3/3] Running verification and updating README..."
+python3 verify.py
+
 echo "=========================================================="
 echo " Pipeline Finished Successfully!"
 echo " All results and vector figures saved to results/"
