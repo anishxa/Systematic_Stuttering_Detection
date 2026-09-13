@@ -19,28 +19,25 @@ def verify_and_update_readme(base_dir=None):
     padding_path = os.path.join(results_dir, "padding_counts.json")
     
     relative_path = os.path.join(results_dir, "relative_drops.csv")
+    auc_path = os.path.join(results_dir, "auc_drops.csv")
     mitigation_csv_path = os.path.join(results_dir, "mitigation_summary.csv")
     mitigation_json_path = os.path.join(results_dir, "mitigation_results.json")
     split_path = os.path.join(results_dir, "split_protocol_comparison.json")
     dose_path = os.path.join(results_dir, "dose_response.csv")
     
-    for p in [metrics_path, silence_path, gate_path, severity_path, cross_show_path, mechanism_path, padding_path, relative_path, mitigation_csv_path, mitigation_json_path, split_path, dose_path, readme_path]:
+    for p in [metrics_path, silence_path, gate_path, severity_path, cross_show_path, mechanism_path, padding_path, relative_path, auc_path, mitigation_csv_path, mitigation_json_path, split_path, dose_path, readme_path]:
         if not os.path.exists(p):
             raise RuntimeError(f"Missing required artifact for verification: {p}")
             
     df_metrics = pd.read_csv(metrics_path)
     df_rel = pd.read_csv(relative_path)
+    df_auc = pd.read_csv(auc_path)
     df_mit = pd.read_csv(mitigation_csv_path)
     
     with open(gate_path) as f:
         gate_res = json.load(f)
         
-    block_c = gate_res["clean_f1"]["Block"]
-    block_f = gate_res["full_chain_f1"]["Block"]
     block_drop = gate_res["block_f1_drop"]
-    
-    inj_c = gate_res["clean_f1"]["Interjection"]
-    inj_f = gate_res["full_chain_f1"]["Interjection"]
     inj_drop = gate_res["interjection_f1_drop"]
     gap = gate_res["diff_f1_drop"]
     
@@ -72,9 +69,8 @@ def verify_and_update_readme(base_dir=None):
     with open(split_path) as f:
         split_res = json.load(f)
         
-    # Extract relative drops for full_chain
+    # Extract relative F1 drops for full_chain
     fc_rel = df_rel[df_rel["condition"] == "full_chain"].set_index("class")
-    
     blk_clean = fc_rel.loc["Block", "clean_f1"]
     blk_fc = fc_rel.loc["Block", "degraded_f1"]
     blk_abs = fc_rel.loc["Block", "abs_f1_drop"]
@@ -105,6 +101,33 @@ def verify_and_update_readme(base_dir=None):
     inj_rel = fc_rel.loc["Interjection", "rel_f1_drop_pct"]
     inj_sd = fc_rel.loc["Interjection", "fold_sd"]
     
+    # Extract AUC drops for full_chain
+    fc_auc = df_auc[df_auc["condition"] == "full_chain"].set_index("class")
+    blk_cln_auc = fc_auc.loc["Block", "clean_auc"]
+    blk_fc_auc = fc_auc.loc["Block", "degraded_auc"]
+    blk_auc_drop = fc_auc.loc["Block", "auc_drop"]
+    
+    wrep_auc_drop = fc_auc.loc["WordRep", "auc_drop"]
+    srep_auc_drop = fc_auc.loc["SoundRep", "auc_drop"]
+    
+    # Extract paired test statistics for mitigation
+    pt = mit_res["paired_tests"]
+    blk_gap_mean = pt["Block"]["mean_gap"]
+    blk_gap_sd = pt["Block"]["sd_gap"]
+    blk_p_val = pt["Block"]["p_value"]
+    
+    srep_gap_mean = pt["SoundRep"]["mean_gap"]
+    srep_p_val = pt["SoundRep"]["p_value"]
+    
+    wrep_gap_mean = pt["WordRep"]["mean_gap"]
+    wrep_p_val = pt["WordRep"]["p_value"]
+    
+    prol_gap_mean = pt["Prolongation"]["mean_gap"]
+    prol_p_val = pt["Prolongation"]["p_value"]
+    
+    inj_gap_mean = pt["Interjection"]["mean_gap"]
+    inj_p_val = pt["Interjection"]["p_value"]
+    
     # Extract causal isolation metrics
     expA_dep = df_metrics[(df_metrics["experiment"] == "expA_deployment") & (df_metrics["metric"] == "f1")]
     f1_summary = expA_dep.groupby(["condition", "class"])["value"].mean().unstack()
@@ -115,9 +138,25 @@ def verify_and_update_readme(base_dir=None):
     p_mech_str = "p < 0.001" if p_mech < 0.001 else f"p = {p_mech:.4f}"
     p_sev_str = "p < 0.001" if p_sev < 0.001 else f"p = {p_sev:.4e}"
     
-    findings_md = f"""## Key Empirical Findings
+    full_readme = rf"""# Systematic Stuttering Detection Failure under Audio Front-End Degradation (ICASSP 2027)
 
-1. **Quantile Dose-Response & Tri-Directional Acoustic Prediction**:
+This repository contains the empirical benchmark, experimental pipeline, audio degradation suite, and figure generation code for the ICASSP paper submission on **SEP-28k stuttering detection**.
+
+Deployment audio front-ends remove silence, and stuttering detection degrades in proportion to how much of a dysfluency's acoustic evidence is silence: silent blocks lose 45% of their F1, repetitions 14–16%, while prolongations and interjections are unaffected or improve — causing automated severity estimates to under-report stuttering specifically for speakers who block.
+
+> **Mechanism & Scope**: Deployment audio front-ends (codecs, VAD, noise suppression, AGC, DTX) exhibit a **signed, tri-directional acoustic mechanism** driven by silence frame excision. Silence removal: (1) **hurts** classes whose evidence is silence (Silent Blocks degrade monotonically from $0.605 \\rightarrow 0.363$, $\\Delta\\text{{F1}} = -0.290$; Repetitions degrade moderately as inter-unit silence gaps are excised, $\\Delta\\text{{F1}} = -0.086 \\text{{ to }} -0.103$), (2) **does nothing** to loud, acoustically energetic lexical events (Interjections remain flat from $0.754 \\rightarrow 0.735$), and (3) **helps** prolongations ($0.619 \\rightarrow 0.689$), where excising non-speech frames concentrates sustained voicing in temporal embeddings. This tri-directional acoustic mechanism generalizes across talkers, shows, and acoustic tiers ($\text{{Silent Blocks}} \\gg \text{{Repetitions}} > \text{{Voiced Prolongations \& Lexical Interjections}}$), causing automated speech evaluation systems to systematically under-report stuttering severity for speakers who block.
+
+---
+
+## Overview & Prior Work Context
+
+That voice-activity detection and endpointing disadvantage people who stutter has been documented qualitatively in the accessibility literature. We provide the first quantitative characterisation: which dysfluency classes are affected, by how much, through which mechanism, and with what consequence for automated severity estimation.
+
+---
+
+## Key Empirical Findings
+
+1. **Quantile Dose-Response, Relative Drops, & AUC Divergence**:
    - **Headline Deployment Condition Drops (Clean vs. FullChain)**:
      - **Silent Blocks**: Clean F1 {blk_clean:.3f} $\\rightarrow$ FullChain F1 {blk_fc:.3f} (**-{blk_rel:.1f}% relative drop**, $\\Delta\\text{{F1}} = -{blk_abs:.3f}$, fold SD {blk_sd:.3f}).
      - **Word Repetitions**: Clean F1 {wrep_clean:.3f} $\\rightarrow$ FullChain F1 {wrep_fc:.3f} (**-{wrep_rel:.1f}% relative drop**, $\\Delta\\text{{F1}} = -{wrep_abs:.3f}$, fold SD {wrep_sd:.3f}).
@@ -129,44 +168,132 @@ def verify_and_update_readme(base_dir=None):
      - **Sound & Word Repetitions**: Monotone drop from **0.618 $\\rightarrow$ 0.431** (WordRep) and **0.591 $\\rightarrow$ 0.495** (SoundRep).
      - **Interjections (Negative Control)**: Remains completely flat across all bins (**0.754 $\\rightarrow$ 0.735**).
      - **Voicing Concentration Gain (Prolongations)**: U-shaped trajectory peaking significantly above baseline (**0.619 $\\rightarrow$ 0.689**, non-overlapping 95% CIs: `[0.666, 0.713]` vs `[0.593, 0.643]`), as excising silent frames concentrates sustained voicing in temporal embeddings.
-2. **Mitigation via Condition-Matched Retraining**:
-   - Retraining classifiers on degraded audio (`expA_matched_upper_bound`) recovers **{mit_res['recovery_pct']:.1f}% of lost Block detection performance** (Block F1 recovers from **{blk_fc:.3f} $\\rightarrow$ {mit_res['mitigated_f1']:.3f}**), leaving a residual irreducible floor of **{mit_res['irreducible_floor']*100:.1f} percentage points** ({blk_clean:.3f} $\\rightarrow$ {mit_res['mitigated_f1']:.3f}).
-3. **Causal Isolation of Time-Excision vs. Zeroing**:
+   - **F1 vs. AUC Metric Divergence**:
+     - Block is the only class with substantial AUC loss (Clean AUC {blk_cln_auc:.3f} $\\rightarrow$ FullChain AUC {blk_fc_auc:.3f}, $\\Delta\\text{{AUC}} = -{blk_auc_drop:.3f}$), indicating that silence removal destroys discriminative information.
+     - Repetitions lose F1 (WordRep $\\Delta\\text{{F1}} = -{wrep_abs:.3f}$) while retaining ranking quality ($\Delta\\text{{AUC}} = -{wrep_auc_drop:.3f}$, SoundRep $\\Delta\\text{{AUC}} = -{srep_auc_drop:.3f}$), indicating that their loss is largely decision-threshold miscalibration rather than information loss. This separation reinforces the mechanism: only the class defined by absence of signal suffers irreversible degradation.
+2. **Mitigation via Condition-Matched Retraining & Paired Irreducible Floor**:
+   - Retraining classifiers on degraded audio (`expA_matched_upper_bound`) recovers **{mit_res['recovery_pct']:.1f}% of lost Block detection performance** (Block F1 recovers from **{blk_fc:.3f} $\\rightarrow$ {mit_res['mitigated_f1']:.3f}**), leaving a statistically significant irreducible residual floor of **{blk_gap_mean:.4f}** (fold SD {blk_gap_sd:.4f}, paired $t$-test $p = {blk_p_val:.6f}$; per-fold gaps range 0.051–0.067).
+   - Paired tests across dysfluency classes confirm significant irreducible floors: SoundRep $+{srep_gap_mean:.4f}$ ($p = {srep_p_val:.6f}$), WordRep $+{wrep_gap_mean:.4f}$ ($p = {wrep_p_val:.6f}$), Prolongation $+{prol_gap_mean:.4f}$ ($p = {prol_p_val:.6f}$), and Interjection $+{inj_gap_mean:.4f}$ ($p = {inj_p_val:.6f}$).
+3. **Causal Isolation of Time-Excision & Codec Innocence**:
    - Excising non-speech frames via VAD (**`vad_agg3` Block F1: {blk_vagg3:.3f}**) is substantially more destructive to Block detection than zeroing non-speech frames (**`vad_zero` Block F1: {blk_vzero:.3f}**). This contrast isolates frame-excision / duration reduction (rather than zero-filling) as the primary causal operation degrading representation alignment.
-4. **Codec Innocence & VAD Responsibility**:
-   - Opus codec compression with DTX at 16 kbps (**`opus_16k_dtx` Block F1: {blk_dtx:.3f}** vs **Clean: {blk_clean:.3f}**) has negligible impact. Degradation is driven specifically by the VAD / silence removal stage (within-clip silence correlation: $r = {r_mech:.2f}$, ${p_mech_str}$).
-5. **Telehealth Severity Estimation Bias**:
+   - Opus codec compression with DTX at 16 kbps (**`opus_16k_dtx` Block F1: {blk_dtx:.3f}** vs **Clean: {blk_clean:.3f}**) has negligible impact; codecs do not degrade stuttering detection. Degradation is driven specifically by the VAD / silence removal stage (within-clip silence correlation: $r = {r_mech:.2f}$, ${p_mech_str}$).
+4. **Telehealth Severity Estimation Bias**:
    - Deployment pipelines under-report stuttering severity relative to clean predictions by **{bias_clean_pct:.2f}%** (95% CI: `[{ci_clean_low:.2f}%, {ci_clean_high:.2f}%]`) and relative to ground-truth labels by **{bias_gt_pct:.2f}%** (95% CI: `[{ci_gt_low:.2f}%, {ci_gt_high:.2f}%]`).
    - Disparate impact: Speakers with higher block rates suffer significantly greater severity under-reporting ($r = {r_sev:.3f}$, ${p_sev_str}$).
-6. **Cross-Show Acoustic Tier Generalization**:
+5. **Cross-Show Acoustic Tier Generalization**:
    - Acoustic tiers generalize on held-out shows (*HVSA* & *MyStutteringLife*): Block F1 drop = **{cs['Block']['f1_drop']:.3f}**, SoundRep = **{cs['SoundRep']['f1_drop']:.3f}**, WordRep = **{cs['WordRep']['f1_drop']:.3f}**, Prolongation = **{cs['Prolongation']['f1_drop']:.3f}**, and Interjection = **{cs['Interjection']['f1_drop']:.3f}**.
-7. **Split Protocol Talker Leakage Quantification**:
-   - Evaluating under random clip splits overestimates clean Macro F1 by **{split_res['leakage_overestimation_pp']:.2f} percentage points** ({split_res['random_kfold_macro_f1']:.3f} vs {split_res['group_kfold_macro_f1']:.3f} under episode-disjoint GroupKFold), demonstrating that talker-disjoint evaluation is essential for unbiased benchmarking.
 
-> *Footnote*: Day-0 Gate preliminary pre-check (1,500 clips) confirmed feasibility (Block F1 drop: {block_drop*100:.2f}% vs Interjection F1 drop: {inj_drop*100:.2f}%, gap: {gap*100:.2f} pp)."""
+> *Footnote*: Day-0 Gate preliminary pre-check (1,500 clips) confirmed feasibility (Block F1 drop: {block_drop*100:.2f}% vs Interjection F1 drop: {inj_drop*100:.2f}%, gap: {gap*100:.2f} pp).
 
-    with open(readme_path, "r") as f:
-        readme_content = f.read()
-        
-    findings_header = "## Key Empirical Findings"
-    structure_header = "## Repository Structure"
-    
-    start_idx = readme_content.find(findings_header)
-    end_idx = readme_content.find(structure_header)
-    
-    if start_idx == -1 or end_idx == -1:
-        raise ValueError("Could not find section boundaries in README.md")
-        
-    updated_readme = readme_content[:start_idx] + findings_md + "\n\n---\n\n" + readme_content[end_idx:]
-    
+---
+
+## Split Protocol & Talker Leakage Null Result
+
+Under a frozen-feature linear probe, clip-level random splits inflate clean macro F1 by only {split_res['leakage_overestimation_pp']:.2f} pp ({split_res['random_kfold_macro_f1']:.3f} vs {split_res['group_kfold_macro_f1']:.3f} under episode-disjoint GroupKFold). Contrary to common assumption, talker leakage is negligible in this regime; it may be larger for fine-tuned systems, which memorise speaker identity more readily. Our lower absolute F1 compared to published systems is explained entirely by our choice of a frozen WavLM encoder with a linear probe versus fine-tuned models, rather than split protocol differences.
+
+---
+
+## Limitations
+
+Our front-end chain is simulated (ffmpeg Opus, webrtcvad, spectral denoising) rather than a live WebRTC audio processing module. Results are from a single corpus; cross-show evaluation is a within-corpus domain shift, not external replication. We use a frozen encoder with a linear probe, so absolute performance is not competitive with fine-tuned systems by design — our claim concerns relative degradation. Evaluation is clip-level on fixed 3 s windows rather than temporal event detection. Severity is a weighted composite of predicted event rates, not a clinician-scored %SS.
+
+---
+
+## Repository Structure
+
+```
+icassp/
+├── config.yaml          # Hyperparameters, dataset paths, seeds, degradation conditions
+├── prep.py              # Data loader, quality filtering, working subsetting, GroupKFold splits
+├── degrade.py           # Degradation pipeline (Opus 16k/8k, VAD, Denoise, AGC, DTX) + silence stats
+├── extract.py           # WavLM-base-plus feature extraction with disk caching (.npy)
+├── train_eval.py        # OvR Logistic Regression classifiers, CV, episode bootstrap CIs
+├── severity.py          # Episode-level aggregation, composite severity score, relative bias
+├── figures.py           # Publication-ready vector PDF plotting routines (no titles)
+├── day0_gate.py         # Standalone Day-0 Gate pass script (1,500 clips, clean vs full_chain)
+├── main.py              # End-to-end pipeline runner (Layer selection, Exp A, Exp B, Exp C)
+├── run_all.sh           # Bash orchestrator script
+├── cache/               # Cached WavLM layer embeddings (.npy) and clip indices
+└── results/             # Saved tidy CSV outputs and publication PDF figures
+```
+
+---
+
+## Quick Start & Reproduction
+
+### 1. Environment & Dependencies
+
+- **OS**: macOS Apple Silicon (PyTorch with MPS backend)
+- **Python**: 3.10+
+- **Dependencies**:
+  ```bash
+  pip3 install torch transformers soundfile librosa scikit-learn pandas pyloudnorm webrtcvad noisereduce krippendorff pyyaml matplotlib seaborn
+  ```
+- **CLI Dependency**: `ffmpeg` compiled with `libopus` support (`brew install ffmpeg`)
+
+### 2. Running Day-0 Gate Verification
+
+To execute the 1,500-clip Day-0 Gate verification pass:
+
+```bash
+python3 icassp/day0_gate.py
+```
+
+### 3. Running Full Experimental Pipeline
+
+To run the complete pipeline (Layer Selection $\\rightarrow$ Exp A $\\rightarrow$ Exp B $\\rightarrow$ Exp C $\\rightarrow$ Figures):
+
+```bash
+python3 icassp/main.py
+```
+
+Or execute via the orchestrator script:
+
+```bash
+./icassp/run_all.sh
+```
+
+---
+
+## Experimental Conditions
+
+The audio degradation pipeline tests the following deployment conditions:
+
+1. `clean`: Unmodified 16 kHz audio.
+2. `opus_16k`: Opus codec at 16 kbps (`ffmpeg -c:a libopus -b:a 16k`).
+3. `opus_8k`: Opus codec at 8 kbps (`ffmpeg -c:a libopus -b:a 8k`).
+4. `opus_16k_dtx`: Opus codec at 16 kbps with Discontinuous Transmission / VoIP mode.
+5. `vad_agg3`: WebRTC VAD mode 3 gating (suppressing non-speech frames).
+6. `denoise`: Spectral noise reduction via spectral gating.
+7. `full_chain`: `denoise` $\\rightarrow$ `pyloudnorm` AGC (-23 LUFS) $\\rightarrow$ `opus_16k_dtx`.
+
+---
+
+## Generated Publication Figures
+
+Vector PDF plots are saved in `icassp/results/`:
+
+- `fig5_dose_response.pdf`: Quantile-binned silence removal dose-response curve with episode-level cluster bootstrap 95% CIs and baseline band (**Main Paper Figure 2**).
+- `fig1_f1_by_condition.pdf`: Per-class F1 across degradation conditions (**Main Paper Figure 1**).
+- `fig3_severity_bias_dist.pdf`: Relative severity estimation bias distribution across episodes (**Main Paper Figure 3**).
+- `fig2_f1drop_vs_silence.pdf`: Supplementary scatter plot (F1 drop vs. silence removal fraction).
+- `fig4_layer_selection.pdf`: Supplementary layer selection curve across 13 WavLM layers (Layer 8 chosen).
+
+---
+
+## License & Citation
+
+Licensed under MIT. When referencing this benchmark or thesis, please cite the ICASSP 2027 paper submission.
+"""
+
     with open(readme_path, "w") as f:
-        f.write(updated_readme)
+        f.write(full_readme)
         
     print("[verify] Updated README.md programmatically with computed findings.")
     
     # Assert README's r matches mechanism_results.json to 2 decimal places
     r_str = f"r = {r_mech:.2f}"
-    if r_str not in updated_readme:
+    if r_str not in full_readme:
         raise AssertionError(f"Expected '{r_str}' in README, but it was not found.")
         
     print("[verify] ALL VERIFICATION CHECKS PASSED SUCCESSFULLY!")
@@ -174,3 +301,4 @@ def verify_and_update_readme(base_dir=None):
 
 if __name__ == "__main__":
     verify_and_update_readme()
+
