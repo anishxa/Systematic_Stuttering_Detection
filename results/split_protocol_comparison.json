@@ -1,0 +1,5 @@
+{
+  "group_kfold_macro_f1": 0.6565525471915837,
+  "random_kfold_macro_f1": 0.6624614367471557,
+  "leakage_overestimation_pp": 0.5908889555572006
+}
