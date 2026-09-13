@@ -2,27 +2,27 @@
 
 This repository contains the empirical benchmark, experimental pipeline, audio degradation suite, and figure generation code for the ICASSP paper submission on **SEP-28k stuttering detection**.
 
-> **Thesis**: Deployment audio front-ends (codecs, VAD, noise suppression, AGC, DTX) degrade stuttering detection in proportion to how much of a dysfluency's acoustic evidence consists of silence. **Silent blocks** (pure silence) degrade most severely ($\Delta\text{F1} = -0.290$), followed by **sound and word repetitions** ($\Delta\text{F1} = -0.086 \text{ to } -0.103$), whose brief inter-unit silence gaps are excised by VAD gating. In contrast, **prolongations** (sustained voicing) and **interjections** (acoustically energetic lexical speech) remain resilient ($\Delta\text{F1} = -0.028 \text{ to } -0.033$). This single mechanism produces a monotone degradation hierarchy across dysfluency classes that generalizes across talkers and shows, causing automated speech evaluation systems to systematically under-report severity.
+> **Thesis**: Deployment audio front-ends (codecs, VAD, noise suppression, AGC, DTX) exhibit a **signed, tri-directional acoustic mechanism** driven by silence frame excision. Silence removal: (1) **hurts** classes whose evidence is silence (Silent Blocks degrade monotonically from $0.605 \rightarrow 0.363$, $\Delta\text{F1} = -0.290$; Repetitions degrade moderately as inter-unit silence gaps are excised, $\Delta\text{F1} = -0.086 \text{ to } -0.103$), (2) **does nothing** to loud, acoustically energetic lexical events (Interjections remain flat from $0.754 \rightarrow 0.735$), and (3) **helps** prolongations ($0.619 \rightarrow 0.689$), where excising non-speech frames concentrates sustained voicing in temporal embeddings. This tri-directional acoustic mechanism generalizes across talkers, shows, and acoustic tiers ($\text{Silent Blocks} \gg \text{Repetitions} > \text{Voiced Prolongations \& Lexical Interjections}$), causing automated speech evaluation systems to systematically under-report stuttering severity for speakers who block.
 
 ---
 
 ## Key Empirical Findings
 
-1. **Graded Acoustic Silence Hierarchy**:
-   - Stuttering detection degrades strictly in proportion to how much of a dysfluency's acoustic evidence consists of silence.
-   - **Silent Blocks** (pure silence) degrade most severely (**Clean F1: 0.647 $\rightarrow$ FullChain F1: 0.357**, $\Delta\text{F1} = -0.290$).
-   - **Word Repetitions** ($\Delta\text{F1} = -0.103$) and **Sound Repetitions** ($\Delta\text{F1} = -0.086$) degrade moderately as VAD excises brief silent gaps between repeated units.
-   - **Prolongations** (sustained voicing, $\Delta\text{F1} = -0.033$) and **Interjections** (acoustically energetic lexical speech, $\Delta\text{F1} = -0.028$) remain highly resilient.
-   - Silence removal correlates with per-class F1 drop across degradation conditions ($r = 0.50$, $p = 0.0011$).
+1. **Quantile Dose-Response & Tri-Directional Acoustic Prediction**:
+   - Across 7 silence-removal quantile bins with episode-level cluster bootstrap CIs, detection performance exhibits three distinct signed acoustic behaviors:
+     - **Severe Monotone Degradation (Silent Blocks)**: Monotonic drop from **0.605 $\rightarrow$ 0.363** (Overall Clean F1: 0.647 $\rightarrow$ FullChain F1: 0.357, $\Delta\text{F1} = -0.290$).
+     - **Moderate Degradation (Sound & Word Repetitions)**: WordRep drops from **0.618 $\rightarrow$ 0.431** ($\Delta\text{F1} = -0.103$) and SoundRep drops to **0.495** ($\Delta\text{F1} = -0.086$) as VAD excises brief silent gaps between repeated units.
+     - **Neutral Negative Control (Interjections)**: Remains flat across all silence-removal bins (**0.754 $\rightarrow$ 0.735**, $\Delta\text{F1} = -0.028$).
+     - **Voicing Concentration Gain (Prolongations)**: U-shaped response peaking significantly above baseline (**0.619 $\rightarrow$ 0.689**, non-overlapping 95% CIs: `[0.666, 0.713]` vs. `[0.593, 0.643]`), as excising silent frames concentrates sustained voicing in temporal embeddings.
 2. **Causal Isolation of Time-Excision vs. Zeroing**:
-   - Excising non-speech frames via VAD (**`vad_agg3` F1: 0.429**) is substantially more destructive to Block detection than zeroing non-speech frames (**`vad_zero` F1: 0.533**). This contrast isolates frame-excision / duration reduction (rather than zero-filling) as the primary causal operation degrading representation alignment.
+   - Excising non-speech frames via VAD (**`vad_agg3` Block F1: 0.429**) is substantially more destructive to Block detection than zeroing non-speech frames (**`vad_zero` Block F1: 0.533**). This contrast isolates frame-excision / duration reduction (rather than zero-filling) as the primary causal operation degrading representation alignment.
 3. **Codec Innocence & VAD Responsibility**:
-   - Opus codec compression with DTX at 16 kbps (**`opus_16k_dtx` F1: 0.640** vs **Clean: 0.647**) has negligible impact on block detection. The degradation is specifically driven by the VAD / silence removal stage.
+   - Opus codec compression with DTX at 16 kbps (**`opus_16k_dtx` Block F1: 0.640** vs **Clean: 0.647**) has negligible impact. Degradation is driven specifically by the VAD / silence removal stage (within-clip silence correlation: $r = 0.50$, $p = 0.0011$).
 4. **Telehealth Severity Estimation Bias**:
    - Deployment pipelines under-report stuttering severity relative to clean predictions by **-14.88%** (95% CI: `[-16.52%, -13.18%]`) and relative to ground-truth labels by **-6.88%** (95% CI: `[-8.71%, -4.97%]`).
    - Disparate impact: Speakers with higher block rates suffer significantly greater severity under-reporting ($r = -0.359$, $p < 0.001$).
-5. **Cross-Show Generalization**:
-   - The monotone acoustic hierarchy generalizes on held-out shows (*HVSA* & *MyStutteringLife*): Block F1 drop = **0.279**, SoundRep = **0.137**, WordRep = **0.113**, Prolongation = **0.040**, and Interjection = **0.040**.
+5. **Cross-Show Acoustic Tier Generalization**:
+   - Acoustic tiers generalize on held-out shows (*HVSA* & *MyStutteringLife*): Block F1 drop = **0.279**, SoundRep = **0.137**, WordRep = **0.113**, Prolongation = **0.040**, and Interjection = **0.040**.
 
 > *Footnote*: Day-0 Gate preliminary pre-check (1,500 clips) confirmed feasibility (Block F1 drop: 19.63% vs Interjection F1 drop: 0.21%, gap: 19.42 pp).
 
@@ -102,11 +102,11 @@ The audio degradation pipeline tests the following deployment conditions:
 
 Vector PDF plots are saved in `icassp/results/`:
 
-- `fig1_f1_by_condition.pdf`: Per-class F1 across degradation conditions (Grouped bar chart).
-- `fig2_f1drop_vs_silence.pdf`: F1 drop vs. silence removal statistic with linear fit line (Main paper figure).
-- `fig3_severity_bias_dist.pdf`: Relative severity estimation bias distribution across episodes.
-- `fig4_layer_selection.pdf`: Layer-wise macro-F1 across 13 WavLM layers (Layer 8 selected).
-- `fig5_dose_response.pdf`: Quantile-binned silence removal dose-response curve with episode bootstrap 95% CIs.
+- `fig5_dose_response.pdf`: Quantile-binned silence removal dose-response curve with episode-level cluster bootstrap 95% CIs and baseline band (**Main Paper Figure 2**).
+- `fig1_f1_by_condition.pdf`: Per-class F1 across degradation conditions (**Main Paper Figure 1**).
+- `fig3_severity_bias_dist.pdf`: Relative severity estimation bias distribution across episodes (**Main Paper Figure 3**).
+- `fig2_f1drop_vs_silence.pdf`: Supplementary scatter plot (F1 drop vs. silence removal fraction).
+- `fig4_layer_selection.pdf`: Supplementary layer selection curve across 13 WavLM layers (Layer 8 chosen).
 
 ---
 
