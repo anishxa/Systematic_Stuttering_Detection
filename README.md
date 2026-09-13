@@ -100,7 +100,7 @@ python3 icassp/day0_gate.py
 
 ### 3. Running Full Experimental Pipeline
 
-To run the complete pipeline (Layer Selection $\\rightarrow$ Exp A $\\rightarrow$ Exp B $\\rightarrow$ Exp C $\\rightarrow$ Figures):
+To run the complete pipeline (Layer Selection $\rightarrow$ Exp A $\rightarrow$ Exp B $\rightarrow$ Exp C $\rightarrow$ Figures):
 
 ```bash
 python3 icassp/main.py
@@ -124,7 +124,7 @@ The audio degradation pipeline tests the following deployment conditions:
 4. `opus_16k_dtx`: Opus codec at 16 kbps with Discontinuous Transmission / VoIP mode.
 5. `vad_agg3`: WebRTC VAD mode 3 gating (suppressing non-speech frames).
 6. `denoise`: Spectral noise reduction via spectral gating.
-7. `full_chain`: `denoise` $\\rightarrow$ `pyloudnorm` AGC (-23 LUFS) $\\rightarrow$ `opus_16k_dtx`.
+7. `full_chain`: `denoise` $\rightarrow$ `pyloudnorm` AGC (-23 LUFS) $\rightarrow$ `opus_16k_dtx`.
 
 ---
 
@@ -132,9 +132,10 @@ The audio degradation pipeline tests the following deployment conditions:
 
 Vector PDF plots are saved in `icassp/results/`:
 
-- `fig5_dose_response.pdf`: Quantile-binned silence removal dose-response curve with episode-level cluster bootstrap 95% CIs and baseline band (**Main Paper Figure 2**).
-- `fig1_f1_by_condition.pdf`: Per-class F1 across degradation conditions (**Main Paper Figure 1**).
-- `fig3_severity_bias_dist.pdf`: Relative severity estimation bias distribution across episodes (**Main Paper Figure 3**).
+- `fig1_f1_by_condition.pdf`: Per-class F1 performance across degradation conditions (**Main Paper Figure 1**).
+- `fig6_disparate_impact.pdf`: Per-episode severity estimation bias scatter against ground-truth block rate ($r = -0.359$, $p < 0.001$) (**Main Paper Figure 2**).
+- `fig5_dose_response.pdf`: Quantile-binned silence removal dose-response curve with episode-level cluster bootstrap 95% CIs (**Main Paper Figure 3**).
+- `fig3_severity_bias_dist.pdf`: Supplementary relative severity estimation bias distribution across episodes.
 - `fig2_f1drop_vs_silence.pdf`: Supplementary scatter plot (F1 drop vs. silence removal fraction).
 - `fig4_layer_selection.pdf`: Supplementary layer selection curve across 13 WavLM layers (Layer 8 chosen).
 
