@@ -186,6 +186,7 @@ def plot_fig4_layer_wise_f1(layer_df, best_layer, out_pdf="icassp/results/fig4_l
 def plot_fig5_dose_response(df_dose, out_pdf="icassp/results/fig5_dose_response.pdf"):
     """
     (e) Dose-response curve showing F1 vs mean silence removal fraction across quantile bins.
+    Bin 0 (silence removal = 0.0) rendered as a distinct un-excised baseline state.
     df_dose columns: [bin, class, mean_silence_removal, n_samples, f1, f1_ci_low, f1_ci_high]
     """
     os.makedirs(os.path.dirname(out_pdf), exist_ok=True)
@@ -196,24 +197,46 @@ def plot_fig5_dose_response(df_dose, out_pdf="icassp/results/fig5_dose_response.
         sub = df_dose[df_dose['class'] == cls].sort_values('mean_silence_removal')
         if len(sub) == 0:
             continue
-        x = sub['mean_silence_removal'].values
-        y = sub['f1'].values
-        y_low = sub['f1_ci_low'].values
-        y_high = sub['f1_ci_high'].values
+            
+        b0 = sub[sub['bin'] == 0]
+        bnz = sub[sub['bin'] > 0]
         
-        y_err_low = np.maximum(0, y - y_low)
-        y_err_high = np.maximum(0, y_high - y)
-        y_err = [y_err_low, y_err_high]
+        c = PALETTE.get(cls, '#333333')
         
-        ax.errorbar(
-            x, y, yerr=y_err, fmt='o-', label=cls,
-            color=PALETTE.get(cls, '#333333'), capsize=3, markersize=5, linewidth=1.5,
-            elinewidth=0.9
-        )
-        
+        # Plot active silence-removal dose-response curve (Bins 1..6)
+        if len(bnz) > 0:
+            x_nz = bnz['mean_silence_removal'].values
+            y_nz = bnz['f1'].values
+            y_low_nz = bnz['f1_ci_low'].values
+            y_high_nz = bnz['f1_ci_high'].values
+            y_err_nz = [np.maximum(0, y_nz - y_low_nz), np.maximum(0, y_high_nz - y_nz)]
+            
+            ax.errorbar(
+                x_nz, y_nz, yerr=y_err_nz, fmt='o-', label=cls,
+                color=c, capsize=3, markersize=5, linewidth=1.5, elinewidth=0.9
+            )
+            
+            # Connect baseline (Bin 0) to Bin 1 with a dotted connector line
+            if len(b0) > 0:
+                x0 = b0['mean_silence_removal'].values[0]
+                y0 = b0['f1'].values[0]
+                low0 = b0['f1_ci_low'].values[0]
+                high0 = b0['f1_ci_high'].values[0]
+                err0 = [[max(0, y0 - low0)], [max(0, high0 - y0)]]
+                
+                ax.errorbar(
+                    [x0], [y0], yerr=err0, fmt='s', color=c,
+                    capsize=3, markersize=5, fillstyle='none', markeredgewidth=1.2, elinewidth=0.9
+                )
+                ax.plot([x0, x_nz[0]], [y0, y_nz[0]], ':', color=c, alpha=0.6, linewidth=1.2)
+                
+    ax.axvline(0.2, color='#888888', linestyle='--', linewidth=0.8, alpha=0.5)
+    ax.text(0.01, 0.94, 'Baseline (Un-excised)', fontsize=8, color='#555555', transform=ax.transAxes)
+    
     ax.set_xlabel('Mean Silence Removal Fraction (Quantile Bins)', fontsize=11)
     ax.set_ylabel('F1 Score (Episode Bootstrap 95% CI)', fontsize=11)
     ax.set_xlim(-0.05, 1.05)
+    ax.set_ylim(0.25, 0.85)
     ax.grid(True)
     ax.legend(frameon=True, facecolor='white', framealpha=0.9, fontsize=9, loc='lower left')
     
@@ -221,4 +244,5 @@ def plot_fig5_dose_response(df_dose, out_pdf="icassp/results/fig5_dose_response.
     plt.savefig(out_pdf, format='pdf', bbox_inches='tight')
     plt.close()
     print(f"[figures] Saved Figure 5 to {out_pdf}")
+
 
