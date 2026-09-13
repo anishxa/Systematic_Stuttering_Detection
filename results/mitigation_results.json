@@ -1,0 +1,11 @@
+{
+  "condition": "full_chain",
+  "class": "Block",
+  "clean_f1": 0.6474597244758948,
+  "unmitigated_f1": 0.357447776476678,
+  "mitigated_f1": 0.5893986858557821,
+  "unmitigated_drop": 0.2900119479992168,
+  "mitigated_drop": 0.05806103862011269,
+  "recovery_pct": 79.97977703309331,
+  "irreducible_floor": 0.05806103862011269
+}

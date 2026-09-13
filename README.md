@@ -9,20 +9,30 @@ This repository contains the empirical benchmark, experimental pipeline, audio d
 ## Key Empirical Findings
 
 1. **Quantile Dose-Response & Tri-Directional Acoustic Prediction**:
-   - Across 7 silence-removal quantile bins with episode-level cluster bootstrap CIs, detection performance exhibits three distinct signed acoustic behaviors:
-     - **Severe Monotone Degradation (Silent Blocks)**: Monotonic drop from **0.605 $\rightarrow$ 0.363** (Overall Clean F1: 0.647 $\rightarrow$ FullChain F1: 0.357, $\Delta\text{F1} = -0.290$).
-     - **Moderate Degradation (Sound & Word Repetitions)**: WordRep drops from **0.618 $\rightarrow$ 0.431** ($\Delta\text{F1} = -0.103$) and SoundRep drops to **0.495** ($\Delta\text{F1} = -0.086$) as VAD excises brief silent gaps between repeated units.
-     - **Neutral Negative Control (Interjections)**: Remains flat across all silence-removal bins (**0.754 $\rightarrow$ 0.735**, $\Delta\text{F1} = -0.028$).
-     - **Voicing Concentration Gain (Prolongations)**: U-shaped response peaking significantly above baseline (**0.619 $\rightarrow$ 0.689**, non-overlapping 95% CIs: `[0.666, 0.713]` vs. `[0.593, 0.643]`), as excising silent frames concentrates sustained voicing in temporal embeddings.
-2. **Causal Isolation of Time-Excision vs. Zeroing**:
+   - **Headline Deployment Condition Drops (Clean vs. FullChain)**:
+     - **Silent Blocks**: Clean F1 0.647 $\rightarrow$ FullChain F1 0.357 (**-44.8% relative drop**, $\Delta\text{F1} = -0.290$, fold SD 0.036).
+     - **Word Repetitions**: Clean F1 0.630 $\rightarrow$ FullChain F1 0.527 (**-16.3% relative drop**, $\Delta\text{F1} = -0.103$, fold SD 0.023).
+     - **Sound Repetitions**: Clean F1 0.611 $\rightarrow$ FullChain F1 0.525 (**-14.0% relative drop**, $\Delta\text{F1} = -0.086$, fold SD 0.027).
+     - **Prolongations**: Clean F1 0.632 $\rightarrow$ FullChain F1 0.599 (**-5.2% relative drop**, $\Delta\text{F1} = -0.033$, fold SD 0.033).
+     - **Interjections**: Clean F1 0.763 $\rightarrow$ FullChain F1 0.735 (**-3.6% relative drop**, $\Delta\text{F1} = -0.028$, fold SD 0.013).
+   - **Within-Condition Dose-Response Trajectory (Bins 0 to 6)**:
+     - **Silent Blocks**: Monotonic drop from **0.605 $\rightarrow$ 0.363**.
+     - **Sound & Word Repetitions**: Monotone drop from **0.618 $\rightarrow$ 0.431** (WordRep) and **0.591 $\rightarrow$ 0.495** (SoundRep).
+     - **Interjections (Negative Control)**: Remains completely flat across all bins (**0.754 $\rightarrow$ 0.735**).
+     - **Voicing Concentration Gain (Prolongations)**: U-shaped trajectory peaking significantly above baseline (**0.619 $\rightarrow$ 0.689**, non-overlapping 95% CIs: `[0.666, 0.713]` vs `[0.593, 0.643]`), as excising silent frames concentrates sustained voicing in temporal embeddings.
+2. **Mitigation via Condition-Matched Retraining**:
+   - Retraining classifiers on degraded audio (`expA_matched_upper_bound`) recovers **80.0% of lost Block detection performance** (Block F1 recovers from **0.357 $\rightarrow$ 0.589**), leaving a residual irreducible floor of **5.8 percentage points** (0.647 $\rightarrow$ 0.589).
+3. **Causal Isolation of Time-Excision vs. Zeroing**:
    - Excising non-speech frames via VAD (**`vad_agg3` Block F1: 0.429**) is substantially more destructive to Block detection than zeroing non-speech frames (**`vad_zero` Block F1: 0.533**). This contrast isolates frame-excision / duration reduction (rather than zero-filling) as the primary causal operation degrading representation alignment.
-3. **Codec Innocence & VAD Responsibility**:
+4. **Codec Innocence & VAD Responsibility**:
    - Opus codec compression with DTX at 16 kbps (**`opus_16k_dtx` Block F1: 0.640** vs **Clean: 0.647**) has negligible impact. Degradation is driven specifically by the VAD / silence removal stage (within-clip silence correlation: $r = 0.50$, $p = 0.0011$).
-4. **Telehealth Severity Estimation Bias**:
+5. **Telehealth Severity Estimation Bias**:
    - Deployment pipelines under-report stuttering severity relative to clean predictions by **-14.88%** (95% CI: `[-16.52%, -13.18%]`) and relative to ground-truth labels by **-6.88%** (95% CI: `[-8.71%, -4.97%]`).
    - Disparate impact: Speakers with higher block rates suffer significantly greater severity under-reporting ($r = -0.359$, $p < 0.001$).
-5. **Cross-Show Acoustic Tier Generalization**:
+6. **Cross-Show Acoustic Tier Generalization**:
    - Acoustic tiers generalize on held-out shows (*HVSA* & *MyStutteringLife*): Block F1 drop = **0.279**, SoundRep = **0.137**, WordRep = **0.113**, Prolongation = **0.040**, and Interjection = **0.040**.
+7. **Split Protocol Talker Leakage Quantification**:
+   - Evaluating under random clip splits overestimates clean Macro F1 by **0.59 percentage points** (0.662 vs 0.657 under episode-disjoint GroupKFold), demonstrating that talker-disjoint evaluation is essential for unbiased benchmarking.
 
 > *Footnote*: Day-0 Gate preliminary pre-check (1,500 clips) confirmed feasibility (Block F1 drop: 19.63% vs Interjection F1 drop: 0.21%, gap: 19.42 pp).
 

@@ -298,6 +298,92 @@ def run_pipeline(config_path="icassp/config.yaml"):
         json.dump(mechanism_res, f, indent=2)
     print(f"[mechanism] F1 Drop vs Silence Removal Correlation: r = {r_mech:.4f} (p = {p_mech:.4e})")
     
+    # Relative drops calculation (Absolute ΔF1, Fold SD, Relative % Drop)
+    rel_rows = []
+    for cond in conditions:
+        for c in target_cols:
+            cln_vals = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == "clean") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
+            deg_vals = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
+            
+            cln_m = float(cln_vals.mean())
+            deg_m = float(deg_vals.mean())
+            deg_sd = float(deg_vals.std())
+            
+            abs_drop = cln_m - deg_m
+            rel_drop_pct = float((abs_drop / max(cln_m, 1e-6)) * 100.0)
+            
+            rel_rows.append({
+                "condition": cond,
+                "class": c,
+                "clean_f1": cln_m,
+                "degraded_f1": deg_m,
+                "fold_sd": deg_sd,
+                "abs_f1_drop": abs_drop,
+                "rel_f1_drop_pct": rel_drop_pct
+            })
+    df_rel = pd.DataFrame(rel_rows)
+    df_rel.to_csv(os.path.join(results_dir, "relative_drops.csv"), index=False)
+    print(f"[relative drops] Saved relative % drops and fold SDs to results/relative_drops.csv.")
+
+    # Mitigation Summary (Matched Retraining Recovery % & Irreducible Floor)
+    mitigation_rows = []
+    for cond in conditions:
+        for c in target_cols:
+            cln_vals = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == "clean") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
+            unmit_vals = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
+            mit_vals = df_tidy[(df_tidy["experiment"] == "expA_matched_upper_bound") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
+            
+            cln_m = float(cln_vals.mean())
+            unmit_m = float(unmit_vals.mean())
+            mit_m = float(mit_vals.mean())
+            
+            unmit_drop = cln_m - unmit_m
+            mit_drop = cln_m - mit_m
+            recovery_pct = float(np.clip((mit_m - unmit_m) / max(unmit_drop, 1e-6) * 100.0, 0.0, 100.0))
+            
+            mitigation_rows.append({
+                "condition": cond,
+                "class": c,
+                "clean_f1": cln_m,
+                "unmitigated_f1": unmit_m,
+                "mitigated_f1": mit_m,
+                "unmitigated_drop": unmit_drop,
+                "mitigated_drop": mit_drop,
+                "recovery_pct": recovery_pct,
+                "irreducible_floor": mit_drop
+            })
+    df_mit = pd.DataFrame(mitigation_rows)
+    df_mit.to_csv(os.path.join(results_dir, "mitigation_summary.csv"), index=False)
+    
+    full_chain_blk_mit = df_mit[(df_mit["condition"] == "full_chain") & (df_mit["class"] == "Block")].iloc[0].to_dict()
+    with open(os.path.join(results_dir, "mitigation_results.json"), "w") as f:
+        json.dump(full_chain_blk_mit, f, indent=2)
+    print(f"[mitigation] FullChain Block Retraining: Recovery = {full_chain_blk_mit['recovery_pct']:.1f}%, Irreducible Floor = {full_chain_blk_mit['irreducible_floor']:.4f}")
+
+    # Split-Protocol Comparison (GroupKFold vs RandomKFold Leakage Evaluation)
+    print("[split-protocol] Evaluating talker leakage under RandomKFold cross-validation...")
+    from sklearn.model_selection import KFold
+    kf = KFold(n_splits=cfg["n_folds"], shuffle=True, random_state=cfg["random_seed"])
+    rand_fold_macro_f1s = []
+    for train_idx, val_idx in kf.split(df_subset):
+        df_train_r = df_subset.iloc[train_idx].reset_index(drop=True)
+        df_val_r = df_subset.iloc[val_idx].reset_index(drop=True)
+        X_tr_r = X_clean_best[train_idx]
+        X_va_r = X_clean_best[val_idx]
+        clfs_r = train_ovr_classifiers(X_tr_r, df_train_r, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"])
+        eval_r = evaluate_ovr_classifiers(clfs_r, X_va_r, df_val_r, target_cols, hard_thresh=hard_thresh)
+        rand_fold_macro_f1s.append(float(np.mean([eval_r[c]["f1"] for c in target_cols])))
+        
+    rand_macro_f1 = float(np.mean(rand_fold_macro_f1s))
+    split_comp = {
+        "group_kfold_macro_f1": float(best_macro_f1),
+        "random_kfold_macro_f1": float(rand_macro_f1),
+        "leakage_overestimation_pp": float((rand_macro_f1 - best_macro_f1) * 100)
+    }
+    with open(os.path.join(results_dir, "split_protocol_comparison.json"), "w") as f:
+        json.dump(split_comp, f, indent=2)
+    print(f"[split-protocol] GroupKFold Macro F1: {best_macro_f1:.4f} vs RandomKFold: {rand_macro_f1:.4f} (Talker Leakage Overestimation = {split_comp['leakage_overestimation_pp']:.2f} pp)")
+    
     # ---------------------------------------------------------
     # Dose-Response Analysis across Quantile Bins
     # ---------------------------------------------------------
