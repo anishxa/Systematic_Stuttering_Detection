@@ -144,8 +144,6 @@ This repository contains the empirical benchmark, experimental pipeline, audio d
 
 Deployment audio front-ends remove silence, and stuttering detection degrades in proportion to how much of a dysfluency's acoustic evidence is silence: silent blocks lose 45% of their F1, repetitions 14–16%, while prolongations and interjections are unaffected or improve — causing automated severity estimates to under-report stuttering specifically for speakers who block.
 
-> **Mechanism & Scope**: Deployment audio front-ends (codecs, VAD, noise suppression, AGC, DTX) exhibit a **signed, tri-directional acoustic mechanism** driven by silence frame excision. Silence removal: (1) **hurts** classes whose evidence is silence (Silent Blocks degrade monotonically from $0.605 \\rightarrow 0.363$, $\\Delta\\text{{F1}} = -0.290$; Repetitions degrade moderately as inter-unit silence gaps are excised, $\\Delta\\text{{F1}} = -0.086 \\text{{ to }} -0.103$), (2) **does nothing** to loud, acoustically energetic lexical events (Interjections remain flat from $0.754 \\rightarrow 0.735$), and (3) **helps** prolongations ($0.619 \\rightarrow 0.689$), where excising non-speech frames concentrates sustained voicing in temporal embeddings. This tri-directional acoustic mechanism generalizes across talkers, shows, and acoustic tiers ($\text{{Silent Blocks}} \\gg \text{{Repetitions}} > \text{{Voiced Prolongations \& Lexical Interjections}}$), causing automated speech evaluation systems to systematically under-report stuttering severity for speakers who block.
-
 ---
 
 ## Overview & Prior Work Context
@@ -158,22 +156,23 @@ That voice-activity detection and endpointing disadvantage people who stutter ha
 
 1. **Quantile Dose-Response, Relative Drops, & AUC Divergence**:
    - **Headline Deployment Condition Drops (Clean vs. FullChain)**:
-     - **Silent Blocks**: Clean F1 {blk_clean:.3f} $\\rightarrow$ FullChain F1 {blk_fc:.3f} (**-{blk_rel:.1f}% relative drop**, $\\Delta\\text{{F1}} = -{blk_abs:.3f}$, fold SD {blk_sd:.3f}).
-     - **Word Repetitions**: Clean F1 {wrep_clean:.3f} $\\rightarrow$ FullChain F1 {wrep_fc:.3f} (**-{wrep_rel:.1f}% relative drop**, $\\Delta\\text{{F1}} = -{wrep_abs:.3f}$, fold SD {wrep_sd:.3f}).
-     - **Sound Repetitions**: Clean F1 {srep_clean:.3f} $\\rightarrow$ FullChain F1 {srep_fc:.3f} (**-{srep_rel:.1f}% relative drop**, $\\Delta\\text{{F1}} = -{srep_abs:.3f}$, fold SD {srep_sd:.3f}).
-     - **Prolongations**: Clean F1 {prol_clean:.3f} $\\rightarrow$ FullChain F1 {prol_fc:.3f} (**-{prol_rel:.1f}% relative drop**, $\\Delta\\text{{F1}} = -{prol_abs:.3f}$, fold SD {prol_sd:.3f}).
-     - **Interjections**: Clean F1 {inj_clean:.3f} $\\rightarrow$ FullChain F1 {inj_fc:.3f} (**-{inj_rel:.1f}% relative drop**, $\\Delta\\text{{F1}} = -{inj_abs:.3f}$, fold SD {inj_sd:.3f}).
+     - **Silent Blocks**: Clean F1 {blk_clean:.3f} $\rightarrow$ FullChain F1 {blk_fc:.3f} (**-{blk_rel:.1f}% relative drop**, $\Delta\text{{F1}} = -{blk_abs:.3f}$, fold SD {blk_sd:.3f}).
+     - **Word Repetitions**: Clean F1 {wrep_clean:.3f} $\rightarrow$ FullChain F1 {wrep_fc:.3f} (**-{wrep_rel:.1f}% relative drop**, $\Delta\text{{F1}} = -{wrep_abs:.3f}$, fold SD {wrep_sd:.3f}).
+     - **Sound Repetitions**: Clean F1 {srep_clean:.3f} $\rightarrow$ FullChain F1 {srep_fc:.3f} (**-{srep_rel:.1f}% relative drop**, $\Delta\text{{F1}} = -{srep_abs:.3f}$, fold SD {srep_sd:.3f}).
+     - **Prolongations**: Clean F1 {prol_clean:.3f} $\rightarrow$ FullChain F1 {prol_fc:.3f} (**-{prol_rel:.1f}% relative drop**, $\Delta\text{{F1}} = -{prol_abs:.3f}$, fold SD {prol_sd:.3f}).
+     - **Interjections**: Clean F1 {inj_clean:.3f} $\rightarrow$ FullChain F1 {inj_fc:.3f} (**-{inj_rel:.1f}% relative drop**, $\Delta\text{{F1}} = -{inj_abs:.3f}$, fold SD {inj_sd:.3f}).
    - **Within-Condition Dose-Response Trajectory (Bins 0 to 6)**:
-     - **Silent Blocks**: Monotonic drop from **0.605 $\\rightarrow$ 0.363**.
-     - **Sound & Word Repetitions**: Monotone drop from **0.618 $\\rightarrow$ 0.431** (WordRep) and **0.591 $\\rightarrow$ 0.495** (SoundRep).
-     - **Interjections (Negative Control)**: Remains completely flat across all bins (**0.754 $\\rightarrow$ 0.735**).
-     - **Voicing Concentration Gain (Prolongations)**: U-shaped trajectory peaking significantly above baseline (**0.619 $\\rightarrow$ 0.689**, non-overlapping 95% CIs: `[0.666, 0.713]` vs `[0.593, 0.643]`), as excising silent frames concentrates sustained voicing in temporal embeddings.
+     - **Silent Blocks**: Monotonic drop from **0.605 $\rightarrow$ 0.363**.
+     - **Sound & Word Repetitions**: Monotone drop from **0.618 $\rightarrow$ 0.431** (WordRep) and **0.591 $\rightarrow$ 0.495** (SoundRep).
+     - **Interjections (Negative Control)**: Remains completely flat across all bins (**0.754 $\rightarrow$ 0.735**).
+     - **Prolongations (voicing concentration under silence removal)**: U-shaped trajectory peaking significantly above baseline (**0.619 $\rightarrow$ 0.689**, non-overlapping 95% CIs: `[0.666, 0.713]` vs `[0.593, 0.643]`), as excising non-speech frames concentrates sustained voicing in temporal embeddings.
    - **F1 vs. AUC Metric Divergence**:
-     - Block is the only class with substantial AUC loss (Clean AUC {blk_cln_auc:.3f} $\\rightarrow$ FullChain AUC {blk_fc_auc:.3f}, $\\Delta\\text{{AUC}} = -{blk_auc_drop:.3f}$), indicating that silence removal destroys discriminative information.
-     - Repetitions lose F1 (WordRep $\\Delta\\text{{F1}} = -{wrep_abs:.3f}$) while retaining ranking quality ($\Delta\\text{{AUC}} = -{wrep_auc_drop:.3f}$, SoundRep $\\Delta\\text{{AUC}} = -{srep_auc_drop:.3f}$), indicating that their loss is largely decision-threshold miscalibration rather than information loss. This separation reinforces the mechanism: only the class defined by absence of signal suffers irreversible degradation.
+     - Silent Blocks and SoundRep show substantial AUC loss (Clean AUC {blk_cln_auc:.3f} $\rightarrow$ FullChain AUC {blk_fc_auc:.3f}, $\Delta\text{{AUC}} = -{blk_auc_drop:.3f}$; SoundRep $\Delta\text{{AUC}} = -{srep_auc_drop:.3f}$), indicating that silence removal destroys discriminative information.
+     - WordRep loses F1 ($\Delta\text{{F1}} = -{wrep_abs:.3f}$) while retaining ranking quality ($\Delta\text{{AUC}} = -{wrep_auc_drop:.3f}$), indicating that its performance loss is largely decision-threshold miscalibration rather than information loss.
+     - The finer the repeated acoustic unit, the more its detectability depends on short inter-unit silences.
 2. **Mitigation via Condition-Matched Retraining & Paired Irreducible Floor**:
-   - Retraining classifiers on degraded audio (`expA_matched_upper_bound`) recovers **{mit_res['recovery_pct']:.1f}% of lost Block detection performance** (Block F1 recovers from **{blk_fc:.3f} $\\rightarrow$ {mit_res['mitigated_f1']:.3f}**), leaving a statistically significant irreducible residual floor of **{blk_gap_mean:.4f}** (fold SD {blk_gap_sd:.4f}, paired $t$-test $p = {blk_p_val:.6f}$; per-fold gaps range 0.051–0.067).
-   - Paired tests across dysfluency classes confirm significant irreducible floors: SoundRep $+{srep_gap_mean:.4f}$ ($p = {srep_p_val:.6f}$), WordRep $+{wrep_gap_mean:.4f}$ ($p = {wrep_p_val:.6f}$), Prolongation $+{prol_gap_mean:.4f}$ ($p = {prol_p_val:.6f}$), and Interjection $+{inj_gap_mean:.4f}$ ($p = {inj_p_val:.6f}$).
+   - Retraining classifiers on degraded audio (`expA_matched_upper_bound`) recovers **{mit_res['recovery_pct']:.1f}% of lost Block detection performance** (Block F1 recovers from **{blk_fc:.3f} $\rightarrow$ {mit_res['mitigated_f1']:.3f}**), leaving a statistically significant irreducible residual floor of **{blk_gap_mean:.4f}** (fold SD {blk_gap_sd:.4f}, paired $t$-test $p = {blk_p_val:.6f}$; per-fold gaps range 0.051–0.067).
+   - Paired tests confirm a significant irreducible floor for SoundRep ($+{srep_gap_mean:.4f}$, $p = {srep_p_val:.6f}$; full per-class statistics recorded in `results/mitigation_summary.csv`).
 3. **Causal Isolation of Time-Excision & Codec Innocence**:
    - Excising non-speech frames via VAD (**`vad_agg3` Block F1: {blk_vagg3:.3f}**) is substantially more destructive to Block detection than zeroing non-speech frames (**`vad_zero` Block F1: {blk_vzero:.3f}**). This contrast isolates frame-excision / duration reduction (rather than zero-filling) as the primary causal operation degrading representation alignment.
    - Opus codec compression with DTX at 16 kbps (**`opus_16k_dtx` Block F1: {blk_dtx:.3f}** vs **Clean: {blk_clean:.3f}**) has negligible impact; codecs do not degrade stuttering detection. Degradation is driven specifically by the VAD / silence removal stage (within-clip silence correlation: $r = {r_mech:.2f}$, ${p_mech_str}$).
@@ -189,7 +188,7 @@ That voice-activity detection and endpointing disadvantage people who stutter ha
 
 ## Split Protocol & Talker Leakage Null Result
 
-Under a frozen-feature linear probe, clip-level random splits inflate clean macro F1 by only {split_res['leakage_overestimation_pp']:.2f} pp ({split_res['random_kfold_macro_f1']:.3f} vs {split_res['group_kfold_macro_f1']:.3f} under episode-disjoint GroupKFold). Contrary to common assumption, talker leakage is negligible in this regime; it may be larger for fine-tuned systems, which memorise speaker identity more readily. Our lower absolute F1 compared to published systems is explained entirely by our choice of a frozen WavLM encoder with a linear probe versus fine-tuned models, rather than split protocol differences.
+Under a frozen-feature linear probe, clip-level random splits inflate clean macro F1 by only {split_res['leakage_overestimation_pp']:.2f} pp ({split_res['random_kfold_macro_f1']:.3f} vs {split_res['group_kfold_macro_f1']:.3f} under episode-disjoint GroupKFold). Contrary to common assumption, talker leakage is negligible in this regime; it may be larger for fine-tuned systems, which memorise speaker identity more readily. We attribute our lower absolute F1 primarily to our choice of a frozen WavLM encoder with a linear probe versus fine-tuned models, rather than split protocol differences.
 
 ---
 
