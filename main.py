@@ -325,13 +325,39 @@ def run_pipeline(config_path="icassp/config.yaml"):
     df_rel.to_csv(os.path.join(results_dir, "relative_drops.csv"), index=False)
     print(f"[relative drops] Saved relative % drops and fold SDs to results/relative_drops.csv.")
 
-    # Mitigation Summary (Matched Retraining Recovery % & Irreducible Floor)
-    mitigation_rows = []
+    # AUC drops calculation (Clean AUC, Degraded AUC, ΔAUC, Relative % AUC Drop)
+    auc_rows = []
     for cond in conditions:
         for c in target_cols:
-            cln_vals = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == "clean") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
-            unmit_vals = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
-            mit_vals = df_tidy[(df_tidy["experiment"] == "expA_matched_upper_bound") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
+            cln_auc_vals = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == "clean") & (df_tidy["class"] == c) & (df_tidy["metric"] == "auc")]["value"].values
+            deg_auc_vals = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "auc")]["value"].values
+            
+            cln_auc = float(cln_auc_vals.mean())
+            deg_auc = float(deg_auc_vals.mean())
+            auc_drop = cln_auc - deg_auc
+            rel_auc_drop_pct = float((auc_drop / max(cln_auc, 1e-6)) * 100.0)
+            
+            auc_rows.append({
+                "condition": cond,
+                "class": c,
+                "clean_auc": cln_auc,
+                "degraded_auc": deg_auc,
+                "auc_drop": auc_drop,
+                "rel_auc_drop_pct": rel_auc_drop_pct
+            })
+    df_auc = pd.DataFrame(auc_rows)
+    df_auc.to_csv(os.path.join(results_dir, "auc_drops.csv"), index=False)
+    print(f"[auc drops] Saved AUC drops to results/auc_drops.csv.")
+
+    # Mitigation Summary & Paired t-test for Irreducible Floor
+    from scipy.stats import ttest_rel
+    mitigation_rows = []
+    paired_mitigation = {}
+    for cond in conditions:
+        for c in target_cols:
+            cln_vals = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == "clean") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")].sort_values("fold")["value"].values
+            unmit_vals = df_tidy[(df_tidy["experiment"] == "expA_deployment") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")].sort_values("fold")["value"].values
+            mit_vals = df_tidy[(df_tidy["experiment"] == "expA_matched_upper_bound") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")].sort_values("fold")["value"].values
             
             cln_m = float(cln_vals.mean())
             unmit_m = float(unmit_vals.mean())
@@ -340,6 +366,19 @@ def run_pipeline(config_path="icassp/config.yaml"):
             unmit_drop = cln_m - unmit_m
             mit_drop = cln_m - mit_m
             recovery_pct = float(np.clip((mit_m - unmit_m) / max(unmit_drop, 1e-6) * 100.0, 0.0, 100.0))
+            
+            gaps = (cln_vals - mit_vals).tolist()
+            gap_mean = float(np.mean(gaps))
+            gap_sd = float(np.std(gaps, ddof=1))
+            _, p_val = ttest_rel(cln_vals, mit_vals)
+            
+            if cond == "full_chain":
+                paired_mitigation[c] = {
+                    "mean_gap": gap_mean,
+                    "sd_gap": gap_sd,
+                    "p_value": float(p_val),
+                    "fold_gaps": gaps
+                }
             
             mitigation_rows.append({
                 "condition": cond,
@@ -350,15 +389,19 @@ def run_pipeline(config_path="icassp/config.yaml"):
                 "unmitigated_drop": unmit_drop,
                 "mitigated_drop": mit_drop,
                 "recovery_pct": recovery_pct,
-                "irreducible_floor": mit_drop
+                "irreducible_floor": mit_drop,
+                "paired_mean_gap": gap_mean,
+                "paired_sd_gap": gap_sd,
+                "paired_p_val": float(p_val)
             })
     df_mit = pd.DataFrame(mitigation_rows)
     df_mit.to_csv(os.path.join(results_dir, "mitigation_summary.csv"), index=False)
     
     full_chain_blk_mit = df_mit[(df_mit["condition"] == "full_chain") & (df_mit["class"] == "Block")].iloc[0].to_dict()
+    full_chain_blk_mit["paired_tests"] = paired_mitigation
     with open(os.path.join(results_dir, "mitigation_results.json"), "w") as f:
         json.dump(full_chain_blk_mit, f, indent=2)
-    print(f"[mitigation] FullChain Block Retraining: Recovery = {full_chain_blk_mit['recovery_pct']:.1f}%, Irreducible Floor = {full_chain_blk_mit['irreducible_floor']:.4f}")
+    print(f"[mitigation] FullChain Block Retraining: Recovery = {full_chain_blk_mit['recovery_pct']:.1f}%, Irreducible Floor = {full_chain_blk_mit['irreducible_floor']:.4f} (p = {paired_mitigation['Block']['p_value']:.6f})")
 
     # Split-Protocol Comparison (GroupKFold vs RandomKFold Leakage Evaluation)
     print("[split-protocol] Evaluating talker leakage under RandomKFold cross-validation...")
