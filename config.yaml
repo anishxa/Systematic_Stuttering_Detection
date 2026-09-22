@@ -5,6 +5,7 @@ paths:
   cache_dir: "cache"
   degraded_audio_dir: "cache/degraded_audio"
   results_dir: "results"
+  figures_dir: "figure"
 
 model:
   encoder: "microsoft/wavlm-base-plus"

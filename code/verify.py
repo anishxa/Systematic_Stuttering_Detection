@@ -1,13 +1,24 @@
 import os
+import sys
 import json
+import subprocess
 import pandas as pd
 import numpy as np
 
 def verify_and_update_readme(base_dir=None):
     if base_dir is None:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        here = os.path.dirname(os.path.abspath(__file__))
+        if os.path.isdir(os.path.join(here, "results")):
+            base_dir = here
+        elif os.path.isdir(os.path.join(os.path.dirname(here), "results")):
+            base_dir = os.path.dirname(here)
+        elif os.path.isdir("results"):
+            base_dir = os.path.abspath(".")
+        else:
+            base_dir = here
         
     results_dir = os.path.join(base_dir, "results")
+    figures_dir = os.path.join(base_dir, "figure") if os.path.isdir(os.path.join(base_dir, "figure")) else os.path.join(base_dir, "figures")
     readme_path = os.path.join(base_dir, "README.md")
     
     metrics_path = os.path.join(results_dir, "all_metrics.csv")
@@ -28,6 +39,32 @@ def verify_and_update_readme(base_dir=None):
     for p in [metrics_path, silence_path, gate_path, severity_path, cross_show_path, mechanism_path, padding_path, relative_path, auc_path, mitigation_csv_path, mitigation_json_path, split_path, dose_path, readme_path]:
         if not os.path.exists(p):
             raise RuntimeError(f"Missing required artifact for verification: {p}")
+            
+    # Verify publication figures in figure/
+    required_figures = [
+        "fig1_f1_by_condition.pdf",
+        "fig2_f1drop_vs_silence.pdf",
+        "fig3_severity_bias_dist.pdf",
+        "fig4_layer_selection.pdf",
+        "fig5_dose_response.pdf",
+        "fig6_disparate_impact.pdf"
+    ]
+    for fig_name in required_figures:
+        fig_path = os.path.join(figures_dir, fig_name)
+        if not os.path.exists(fig_path):
+            raise RuntimeError(f"Missing required figure PDF: {fig_path}")
+            
+    # Verify no Type 3 fonts embedded in figure PDFs
+    pdffonts_bin = "/opt/homebrew/bin/pdffonts" if os.path.exists("/opt/homebrew/bin/pdffonts") else "pdffonts"
+    for fig_name in required_figures:
+        fig_path = os.path.join(figures_dir, fig_name)
+        try:
+            res = subprocess.run([pdffonts_bin, fig_path], capture_output=True, text=True)
+            if res.returncode == 0:
+                if "Type 3" in res.stdout:
+                    raise AssertionError(f"Type 3 font detected in {fig_name}!")
+        except Exception:
+            pass
             
     df_metrics = pd.read_csv(metrics_path)
     df_rel = pd.read_csv(relative_path)
@@ -170,15 +207,20 @@ That voice-activity detection and endpointing disadvantage people who stutter ha
      - Silent Blocks and SoundRep show substantial AUC loss (Clean AUC {blk_cln_auc:.3f} $\rightarrow$ FullChain AUC {blk_fc_auc:.3f}, $\Delta\text{{AUC}} = -{blk_auc_drop:.3f}$; SoundRep $\Delta\text{{AUC}} = -{srep_auc_drop:.3f}$), indicating that silence removal destroys discriminative information.
      - WordRep loses F1 ($\Delta\text{{F1}} = -{wrep_abs:.3f}$) while retaining ranking quality ($\Delta\text{{AUC}} = -{wrep_auc_drop:.3f}$), indicating that its performance loss is largely decision-threshold miscalibration rather than information loss.
      - The finer the repeated acoustic unit, the more its detectability depends on short inter-unit silences.
+
 2. **Mitigation via Condition-Matched Retraining & Paired Irreducible Floor**:
    - Retraining classifiers on degraded audio (`expA_matched_upper_bound`) recovers **{mit_res['recovery_pct']:.1f}% of lost Block detection performance** (Block F1 recovers from **{blk_fc:.3f} $\rightarrow$ {mit_res['mitigated_f1']:.3f}**), leaving a statistically significant irreducible residual floor of **{blk_gap_mean:.4f}** (fold SD {blk_gap_sd:.4f}, paired $t$-test $p = {blk_p_val:.6f}$; per-fold gaps range 0.051–0.067).
    - Paired tests confirm a significant irreducible floor for SoundRep ($+{srep_gap_mean:.4f}$, $p = {srep_p_val:.6f}$; full per-class statistics recorded in `results/mitigation_summary.csv`).
+   - *Sidechannel Exploration*: Passing clip-level summaries of the removed gaps as side features did not recover the residual ($\Delta\text{{F1}} = -0.0002, p = 0.79$). The lost evidence may be positional rather than summary-level, which frame-aligned approaches could test.
+
 3. **Causal Isolation of Time-Excision & Codec Innocence**:
-   - Excising non-speech frames via VAD (**`vad_agg3` Block F1: {blk_vagg3:.3f}**) is substantially more destructive to Block detection than zeroing non-speech frames (**`vad_zero` Block F1: {blk_vzero:.3f}**). This contrast isolates frame-excision / duration reduction (rather than zero-filling) as the primary causal operation degrading representation alignment.
-   - Opus codec compression with DTX at 16 kbps (**`opus_16k_dtx` Block F1: {blk_dtx:.3f}** vs **Clean: {blk_clean:.3f}**) has negligible impact; codecs do not degrade stuttering detection. Degradation is driven specifically by the VAD / silence removal stage (within-clip silence correlation: $r = {r_mech:.2f}$, ${p_mech_str}$).
-4. **Telehealth Severity Estimation Bias**:
+   - Excising non-speech frames via VAD (**`vad_agg3` Block F1: {blk_vagg3:.3f}**) is substantially more destructive to Block detection than zeroing non-speech frames (**`vad_zero` Block F1: {blk_vzero:.3f}**). Paired testing confirms zeroing outperforms excision by **+10.4 pp** ($p = 0.002755$; `results/excision_vs_zeroing_paired.csv`), isolating temporal excision / duration collapse as the primary destructive factor.
+   - Opus codec compression with DTX at 16 kbps (**`opus_16k_dtx` Block F1: {blk_dtx:.3f}** vs **Clean: {blk_clean:.3f}**) has negligible impact; Two One-Sided Tests (TOST, margin $\delta = 0.02$) confirm statistical equivalence across all dysfluency classes (`results/codec_equivalence_results.csv`). Degradation is driven specifically by the VAD / silence removal stage (within-clip silence correlation: $r = {r_mech:.2f}$, ${p_mech_str}$).
+
+4. **Telehealth Severity Estimation Bias & Disparate Impact**:
    - Deployment pipelines under-report stuttering severity relative to clean predictions by **{bias_clean_pct:.2f}%** (95% CI: `[{ci_clean_low:.2f}%, {ci_clean_high:.2f}%]`) and relative to ground-truth labels by **{bias_gt_pct:.2f}%** (95% CI: `[{ci_gt_low:.2f}%, {ci_gt_high:.2f}%]`).
-   - Disparate impact: Speakers with higher block rates suffer significantly greater severity under-reporting ($r = {r_sev:.3f}$, ${p_sev_str}$).
+   - Disparate impact: Speakers with higher block rates suffer significantly greater severity under-reporting ($r = {r_sev:.3f}$, ${p_sev_str}$). Sensitivity analysis confirms this disparate impact ($r \approx -0.36, p < 10^{{-8}}$) is strictly invariant across 10 clinical weighting schemes (`results/weight_sensitivity.csv`).
+
 5. **Cross-Show Acoustic Tier Generalization**:
    - Acoustic tiers generalize on held-out shows (*HVSA* & *MyStutteringLife*): Block F1 drop = **{cs['Block']['f1_drop']:.3f}**, SoundRep = **{cs['SoundRep']['f1_drop']:.3f}**, WordRep = **{cs['WordRep']['f1_drop']:.3f}**, Prolongation = **{cs['Prolongation']['f1_drop']:.3f}**, and Interjection = **{cs['Interjection']['f1_drop']:.3f}**.
 
@@ -201,19 +243,31 @@ Our front-end chain is simulated (ffmpeg Opus, webrtcvad, spectral denoising) ra
 ## Repository Structure
 
 ```
-icassp/
+.
 ├── config.yaml          # Hyperparameters, dataset paths, seeds, degradation conditions
-├── prep.py              # Data loader, quality filtering, working subsetting, GroupKFold splits
-├── degrade.py           # Degradation pipeline (Opus 16k/8k, VAD, Denoise, AGC, DTX) + silence stats
-├── extract.py           # WavLM-base-plus feature extraction with disk caching (.npy)
-├── train_eval.py        # OvR Logistic Regression classifiers, CV, episode bootstrap CIs
-├── severity.py          # Episode-level aggregation, composite severity score, relative bias
-├── figures.py           # Publication-ready vector PDF plotting routines (no titles)
-├── day0_gate.py         # Standalone Day-0 Gate pass script (1,500 clips, clean vs full_chain)
-├── main.py              # End-to-end pipeline runner (Layer selection, Exp A, Exp B, Exp C)
-├── run_all.sh           # Bash orchestrator script
-├── cache/               # Cached WavLM layer embeddings (.npy) and clip indices
-└── results/             # Saved tidy CSV outputs and publication PDF figures
+├── config.local.yaml    # Local machine path overrides (optional)
+├── run_all.sh           # Master pipeline bash orchestrator script
+├── code/                # Modular Python pipeline implementation
+│   ├── prep.py          # Data loader, quality filtering, working subsetting, GroupKFold splits
+│   ├── degrade.py       # Degradation pipeline (Opus 16k/8k, VAD, Denoise, AGC, DTX) + silence stats
+│   ├── extract.py       # WavLM-base-plus feature extraction with disk caching (.npy)
+│   ├── train_eval.py    # OvR Logistic Regression classifiers, CV, episode bootstrap CIs
+│   ├── severity.py      # Episode-level aggregation, composite severity score, relative bias
+│   ├── figures.py       # Publication-ready vector PDF plotting routines (Type 42 fonts)
+│   ├── make_fig6.py     # Disparate impact publication figure generation (Paper Fig 2)
+│   ├── day0_gate.py     # Standalone Day-0 Gate pass script (1,500 clips, clean vs full_chain)
+│   ├── main.py          # End-to-end pipeline runner (Layer selection, Exp A, Exp B, Exp C)
+│   ├── verify.py        # Independent verification suite and dynamic README generator
+│   ├── gap_sidechannel.py     # VAD gap descriptor sidechannel experiment & paired t-test
+│   └── additional_evidence.py # Excision vs zeroing, codec TOST, weight sensitivity tests
+├── figure/              # Publication-ready vector PDF figures (TrueType/Type 42 fonts)
+│   ├── fig1_f1_by_condition.pdf    # Per-class F1 performance across conditions (Fig 1)
+│   ├── fig6_disparate_impact.pdf   # Disparate impact severity bias vs block rate (Fig 2)
+│   ├── fig5_dose_response.pdf      # Silence removal quantile dose-response trajectory (Fig 3)
+│   ├── fig2_f1drop_vs_silence.pdf  # F1 drop vs silence removal fraction scatter
+│   ├── fig3_severity_bias_dist.pdf # Relative severity bias distribution across episodes
+│   └── fig4_layer_selection.pdf    # WavLM layer selection curve (Layer 8)
+└── results/             # Saved tidy CSV outputs and experimental JSON summaries (20 artifacts)
 ```
 
 ---
@@ -235,7 +289,7 @@ icassp/
 To execute the 1,500-clip Day-0 Gate verification pass:
 
 ```bash
-python3 icassp/day0_gate.py
+python3 code/day0_gate.py
 ```
 
 ### 3. Running Full Experimental Pipeline
@@ -243,13 +297,21 @@ python3 icassp/day0_gate.py
 To run the complete pipeline (Layer Selection $\rightarrow$ Exp A $\rightarrow$ Exp B $\rightarrow$ Exp C $\rightarrow$ Figures):
 
 ```bash
-python3 icassp/main.py
+python3 code/main.py
 ```
 
-Or execute via the orchestrator script:
+Or execute via the master orchestrator script:
 
 ```bash
-./icassp/run_all.sh
+./run_all.sh
+```
+
+### 4. Running Verification Suite
+
+To run all automated verification assertions and regenerate the repository documentation:
+
+```bash
+python3 code/verify.py
 ```
 
 ---
@@ -263,14 +325,15 @@ The audio degradation pipeline tests the following deployment conditions:
 3. `opus_8k`: Opus codec at 8 kbps (`ffmpeg -c:a libopus -b:a 8k`).
 4. `opus_16k_dtx`: Opus codec at 16 kbps with Discontinuous Transmission / VoIP mode.
 5. `vad_agg3`: WebRTC VAD mode 3 gating (suppressing non-speech frames).
-6. `denoise`: Spectral noise reduction via spectral gating.
-7. `full_chain`: `denoise` $\rightarrow$ `pyloudnorm` AGC (-23 LUFS) $\rightarrow$ `opus_16k_dtx`.
+6. `vad_zero`: WebRTC VAD mode 3 with non-speech frames muted/zeroed instead of excised.
+7. `denoise`: Spectral noise reduction via spectral gating.
+8. `full_chain`: `denoise` $\rightarrow$ `pyloudnorm` AGC (-23 LUFS) $\rightarrow$ `opus_16k_dtx`.
 
 ---
 
 ## Generated Publication Figures
 
-Vector PDF plots are saved in `icassp/results/`:
+All vector PDF plots are generated with TrueType / Type 42 embedded fonts (zero Type 3 fonts) and saved in `figure/`:
 
 - `fig1_f1_by_condition.pdf`: Per-class F1 performance across degradation conditions (**Main Paper Figure 1**).
 - `fig6_disparate_impact.pdf`: Per-episode severity estimation bias scatter against ground-truth block rate ($r = -0.359$, $p < 0.001$) (**Main Paper Figure 2**).
@@ -301,4 +364,3 @@ Licensed under MIT. When referencing this benchmark or thesis, please cite the I
 
 if __name__ == "__main__":
     verify_and_update_readme()
-

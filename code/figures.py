@@ -27,11 +27,16 @@ PALETTE = {
     'Interjection': '#66a61e'
 }
 
-def plot_fig1_f1_by_condition(df_metrics, out_pdf="icassp/results/fig1_f1_by_condition.pdf"):
+DEFAULT_FIG_DIR = "icassp/figure" if os.path.isdir("icassp/figure") else ("figure" if os.path.isdir("figure") else "figure")
+DEFAULT_RESULTS_DIR = "icassp/results" if os.path.isdir("icassp/results") else ("results" if os.path.isdir("results") else "results")
+
+def plot_fig1_f1_by_condition(df_metrics, out_pdf=None):
     """
     (a) Per-class F1 by degradation condition, grouped bars.
     df_metrics columns: [condition, class, f1, f1_ci_low, f1_ci_high]
     """
+    if out_pdf is None:
+        out_pdf = os.path.join(DEFAULT_FIG_DIR, "fig1_f1_by_condition.pdf")
     os.makedirs(os.path.dirname(out_pdf), exist_ok=True)
     
     classes = ['Block', 'Prolongation', 'SoundRep', 'WordRep', 'Interjection']
@@ -76,11 +81,15 @@ def plot_fig1_f1_by_condition(df_metrics, out_pdf="icassp/results/fig1_f1_by_con
     plt.close()
     print(f"[figures] Saved Figure 1 to {out_pdf}")
 
-def plot_fig2_f1drop_vs_silence(df_scatter, out_pdf="icassp/results/fig2_f1drop_vs_silence.pdf", mech_json="icassp/results/mechanism_results.json"):
+def plot_fig2_f1drop_vs_silence(df_scatter, out_pdf=None, mech_json=None):
     """
     (b) F1 drop vs. silence-removal scatter with fit line (Main Paper Figure).
     df_scatter columns: [condition, class, f1_drop, silence_removal_stat]
     """
+    if out_pdf is None:
+        out_pdf = os.path.join(DEFAULT_FIG_DIR, "fig2_f1drop_vs_silence.pdf")
+    if mech_json is None:
+        mech_json = os.path.join(DEFAULT_RESULTS_DIR, "mechanism_results.json")
     os.makedirs(os.path.dirname(out_pdf), exist_ok=True)
     
     fig, ax = plt.subplots(figsize=(6, 4.5), dpi=300)
@@ -131,11 +140,13 @@ def plot_fig2_f1drop_vs_silence(df_scatter, out_pdf="icassp/results/fig2_f1drop_
     plt.close()
     print(f"[figures] Saved Figure 2 to {out_pdf}")
 
-def plot_fig3_severity_bias_dist(df_bias, mean_bias, ci_low, ci_high, out_pdf="icassp/results/fig3_severity_bias_dist.pdf"):
+def plot_fig3_severity_bias_dist(df_bias, mean_bias, ci_low, ci_high, out_pdf=None):
     """
     (c) Severity bias distribution across episodes.
     df_bias column: [rel_bias]
     """
+    if out_pdf is None:
+        out_pdf = os.path.join(DEFAULT_FIG_DIR, "fig3_severity_bias_dist.pdf")
     os.makedirs(os.path.dirname(out_pdf), exist_ok=True)
     
     fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
@@ -165,11 +176,13 @@ def plot_fig3_severity_bias_dist(df_bias, mean_bias, ci_low, ci_high, out_pdf="i
     plt.close()
     print(f"[figures] Saved Figure 3 to {out_pdf}")
 
-def plot_fig4_layer_wise_f1(layer_df, best_layer, out_pdf="icassp/results/fig4_layer_selection.pdf"):
+def plot_fig4_layer_wise_f1(layer_df, best_layer, out_pdf=None):
     """
     (d) Layer-wise F1 for layer selection across 13 WavLM layers.
     layer_df columns: [layer, macro_f1]
     """
+    if out_pdf is None:
+        out_pdf = os.path.join(DEFAULT_FIG_DIR, "fig4_layer_selection.pdf")
     os.makedirs(os.path.dirname(out_pdf), exist_ok=True)
     
     fig, ax = plt.subplots(figsize=(6, 3.8), dpi=300)
@@ -188,12 +201,14 @@ def plot_fig4_layer_wise_f1(layer_df, best_layer, out_pdf="icassp/results/fig4_l
     plt.close()
     print(f"[figures] Saved Figure 4 to {out_pdf}")
 
-def plot_fig5_dose_response(df_dose, out_pdf="icassp/results/fig5_dose_response.pdf"):
+def plot_fig5_dose_response(df_dose, out_pdf=None):
     """
     (e) Dose-response curve showing F1 vs mean silence removal fraction across quantile bins.
     Bin 0 (silence removal = 0.0) rendered as a distinct un-excised baseline state.
     df_dose columns: [bin, class, mean_silence_removal, n_samples, f1, f1_ci_low, f1_ci_high]
     """
+    if out_pdf is None:
+        out_pdf = os.path.join(DEFAULT_FIG_DIR, "fig5_dose_response.pdf")
     os.makedirs(os.path.dirname(out_pdf), exist_ok=True)
     fig, ax = plt.subplots(figsize=(6.5, 4.2), dpi=300)
     

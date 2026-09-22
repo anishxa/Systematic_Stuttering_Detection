@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import yaml
@@ -6,6 +7,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from prep import prepare_dataset, load_and_filter_sep28k, load_config
 from extract import extract_features_for_subset
 from degrade import compute_silence_removal_statistic, load_audio_16k, process_degradation
@@ -19,7 +21,7 @@ from figures import (
     plot_fig5_dose_response
 )
 
-def run_pipeline(config_path="icassp/config.yaml"):
+def run_pipeline(config_path="config.yaml"):
     wall_clock = {}
     t_start_total = time.time()
     
@@ -29,9 +31,11 @@ def run_pipeline(config_path="icassp/config.yaml"):
     results_dir = cfg["paths"]["results_dir"]
     cache_dir = cfg["paths"]["cache_dir"]
     degraded_dir = cfg["paths"]["degraded_audio_dir"]
+    figures_dir = cfg["paths"].get("figures_dir", os.path.join(os.path.dirname(results_dir), "figure"))
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(degraded_dir, exist_ok=True)
+    os.makedirs(figures_dir, exist_ok=True)
     
     target_cols = cfg["stutter_classes"]
     conditions = cfg["degradation_conditions"]
@@ -108,7 +112,7 @@ def run_pipeline(config_path="icassp/config.yaml"):
     print(f"\n>>> Selected Layer {best_layer} (Macro F1 = {best_macro_f1:.4f}). Layer choice frozen for all experiments.")
     
     layer_df = pd.DataFrame(layer_scores)
-    plot_fig4_layer_wise_f1(layer_df, best_layer, out_pdf=os.path.join(results_dir, "fig4_layer_selection.pdf"))
+    plot_fig4_layer_wise_f1(layer_df, best_layer, out_pdf=os.path.join(figures_dir, "fig4_layer_selection.pdf"))
     
     # ---------------------------------------------------------
     # STEP 3: Feature Extraction & Silence Removal across Conditions
@@ -515,9 +519,9 @@ def run_pipeline(config_path="icassp/config.yaml"):
     df_dose.to_csv(os.path.join(results_dir, "dose_response.csv"), index=False)
     print(f"[dose-response] Saved {len(df_dose)} binned dose-response points (7 bins) to results/dose_response.csv.")
     
-    plot_fig1_f1_by_condition(df_fig1, out_pdf=os.path.join(results_dir, "fig1_f1_by_condition.pdf"))
-    plot_fig2_f1drop_vs_silence(df_fig2_scatter, out_pdf=os.path.join(results_dir, "fig2_f1drop_vs_silence.pdf"))
-    plot_fig5_dose_response(df_dose, out_pdf=os.path.join(results_dir, "fig5_dose_response.pdf"))
+    plot_fig1_f1_by_condition(df_fig1, out_pdf=os.path.join(figures_dir, "fig1_f1_by_condition.pdf"))
+    plot_fig2_f1drop_vs_silence(df_fig2_scatter, out_pdf=os.path.join(figures_dir, "fig2_f1drop_vs_silence.pdf"))
+    plot_fig5_dose_response(df_dose, out_pdf=os.path.join(figures_dir, "fig5_dose_response.pdf"))
     
     wall_clock["step4_experiment_A"] = time.time() - t0
     
@@ -558,7 +562,7 @@ def run_pipeline(config_path="icassp/config.yaml"):
         bias_res["mean_bias"],
         bias_res["mean_bias_ci"][0],
         bias_res["mean_bias_ci"][1],
-        out_pdf=os.path.join(results_dir, "fig3_severity_bias_dist.pdf")
+        out_pdf=os.path.join(figures_dir, "fig3_severity_bias_dist.pdf")
     )
     
     bias_summary = {
