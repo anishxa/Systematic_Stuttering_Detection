@@ -1,16 +1,19 @@
 import os
+import sys
 import time
 import json
 import yaml
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import GroupShuffleSplit
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from prep import load_and_filter_sep28k, load_config
 from extract import extract_features_for_subset
 from degrade import load_audio_16k, process_degradation, compute_silence_removal_statistic
 from train_eval import train_ovr_classifiers, evaluate_ovr_classifiers
 
-def run_day0_gate(config_path="icassp/config.yaml"):
+def run_day0_gate(config_path="config.yaml"):
     start_time = time.time()
     print("=" * 60)
     print("      DAY-0 GATE EXECUTION - VERIFYING THESIS      ")

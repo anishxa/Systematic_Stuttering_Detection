@@ -5,27 +5,43 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import GroupKFold
 
-def load_config(config_path="icassp/config.yaml"):
+def load_config(config_path="config.yaml"):
     if not os.path.exists(config_path):
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        alt_path = os.path.join(script_dir, os.path.basename(config_path))
-        if os.path.exists(alt_path):
-            config_path = alt_path
+        candidates = [
+            os.path.join(os.path.dirname(script_dir), os.path.basename(config_path)),
+            os.path.join(script_dir, os.path.basename(config_path)),
+            os.path.join(os.getcwd(), config_path),
+            os.path.join(os.getcwd(), "icassp", config_path),
+            os.path.join(os.getcwd(), os.path.basename(config_path)),
+            os.path.join(os.getcwd(), "icassp", os.path.basename(config_path)),
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                config_path = c
+                break
             
     with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
         
     config_dir = os.path.dirname(os.path.abspath(config_path))
-    local_cfg_path = os.path.join(config_dir, "config.local.yaml")
-    if os.path.exists(local_cfg_path):
-        with open(local_cfg_path, "r") as f:
-            local_cfg = yaml.safe_load(f)
-            if local_cfg:
-                if "paths" in local_cfg and "paths" in cfg:
-                    cfg["paths"].update(local_cfg["paths"])
-                for k, v in local_cfg.items():
-                    if k != "paths":
-                        cfg[k] = v
+    local_cfg_candidates = [
+        os.path.join(config_dir, "config.local.yaml"),
+        os.path.join(os.path.dirname(config_dir), "config.local.yaml"),
+        os.path.join(os.getcwd(), "config.local.yaml"),
+        os.path.join(os.getcwd(), "icassp", "config.local.yaml")
+    ]
+    for local_cfg_path in local_cfg_candidates:
+        if os.path.exists(local_cfg_path):
+            with open(local_cfg_path, "r") as f:
+                local_cfg = yaml.safe_load(f)
+                if local_cfg:
+                    if "paths" in local_cfg and "paths" in cfg:
+                        cfg["paths"].update(local_cfg["paths"])
+                    for k, v in local_cfg.items():
+                        if k != "paths":
+                            cfg[k] = v
+            break
                         
     return cfg
 

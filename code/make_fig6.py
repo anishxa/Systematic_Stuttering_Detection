@@ -16,9 +16,10 @@ matplotlib.rcParams['ps.fonttype'] = 42
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr
 
-RESULTS_DIR = "icassp/results" if os.path.exists("icassp/results") else "results"
+RESULTS_DIR = "icassp/results" if os.path.isdir("icassp/results") else "results"
+FIGURES_DIR = "icassp/figure" if os.path.isdir("icassp/figure") else "figure"
 IN_CSV = os.path.join(RESULTS_DIR, "episode_bias.csv")
-OUT_PDF = os.path.join(RESULTS_DIR, "fig6_disparate_impact.pdf")
+OUT_PDF = os.path.join(FIGURES_DIR, "fig6_disparate_impact.pdf")
 
 # Publication styling. Fonts are sized for a single column of about 3.4 in.
 plt.rcParams.update({
