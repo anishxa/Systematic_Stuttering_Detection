@@ -1,11 +1,16 @@
 import os
 import json
+import matplotlib
+matplotlib.rcParams['pdf.fonttype'] = 42
+matplotlib.rcParams['ps.fonttype'] = 42
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import numpy as np
 
 # Publication styling
+plt.rcParams['pdf.fonttype'] = 42
+plt.rcParams['ps.fonttype'] = 42
 plt.rcParams['font.family'] = 'sans-serif'
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'Helvetica']
 plt.rcParams['axes.edgecolor'] = '#333333'

@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
+matplotlib.rcParams['pdf.fonttype'] = 42
+matplotlib.rcParams['ps.fonttype'] = 42
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr
 
@@ -20,6 +22,8 @@ OUT_PDF = os.path.join(RESULTS_DIR, "fig6_disparate_impact.pdf")
 
 # Publication styling. Fonts are sized for a single column of about 3.4 in.
 plt.rcParams.update({
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
     "font.family": "sans-serif",
     "font.sans-serif": ["DejaVu Sans", "Arial", "Helvetica"],
     "font.size": 8,
