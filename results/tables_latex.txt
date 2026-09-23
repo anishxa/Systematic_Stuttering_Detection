@@ -1,0 +1,65 @@
+% ==========================================================
+% TABLE I: Per-class scores with 95% Bootstrap CIs
+% ==========================================================
+\begin{table}[t]
+\centering
+\small
+\caption{Per-class scores on clean audio and under the full deployment chain with 95\% episode-level bootstrap confidence intervals. SD is fold-to-fold standard deviation of $F_1$.}
+\label{tab:table1}
+\begin{tabular}{lcccccc}
+\toprule
+Class & Clean $F_1$ [95\% CI] & Chain $F_1$ [95\% CI] & rel. $\Delta$ & SD & Clean AUC & Chain AUC \\
+\midrule
+Block        & 0.648 [0.627, 0.667] & 0.359 [0.337, 0.384] & $-44.6\%$ & 0.036 & 0.710 & 0.615 \\
+Prolongation & 0.635 [0.612, 0.657] & 0.601 [0.576, 0.623] & $-5.3\%$ & 0.033 & 0.787 & 0.757 \\
+SoundRep     & 0.611 [0.585, 0.637] & 0.525 [0.498, 0.553] & $-14.1\%$ & 0.027 & 0.836 & 0.753 \\
+WordRep      & 0.631 [0.610, 0.652] & 0.529 [0.505, 0.553] & $-16.2\%$ & 0.023 & 0.860 & 0.836 \\
+Interjection & 0.763 [0.747, 0.780] & 0.736 [0.716, 0.754] & $-3.6\%$ & 0.013 & 0.869 & 0.845 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ==========================================================
+% TABLE II: Block detection under single front-end components with 95% CIs
+% ==========================================================
+\begin{table}[t]
+\centering
+\small
+\caption{Block detection under single front-end components, with 95\% CIs, fraction of silence removed $\rho$, and duration lost $\delta$. Tested with a classifier trained on clean audio.}
+\label{tab:table2}
+\begin{tabular}{lcccc}
+\toprule
+Condition & $F_1$ [95\% CI] & rel. $\Delta$ [95\% CI] & $\rho$ & $\delta$ \\
+\midrule
+clean              & 0.648 [0.627, 0.667] & $0.0\%$ & 0.00 & 0.00 \\
+opus\_16k          & 0.642 [0.619, 0.662] & $-1.0\%$ [$-1.6\%, -0.4\%$] & 0.00 & 0.00 \\
+opus\_16k\_dtx     & 0.641 [0.619, 0.661] & $-1.1\%$ [$-1.7\%, -0.5\%$] & 0.00 & 0.00 \\
+opus\_8k           & 0.598 [0.576, 0.620] & $-7.7\%$ [$-9.1\%, -6.4\%$] & 0.00 & 0.00 \\
+denoise            & 0.550 [0.524, 0.574] & $-15.2\%$ [$-17.4\%, -13.2\%$] & 0.00 & 0.00 \\
+vad\_zero          & 0.536 [0.515, 0.557] & $-17.4\%$ [$-19.5\%, -15.1\%$] & 0.00 & 0.00 \\
+vad\_agg3          & 0.431 [0.406, 0.458] & $-33.5\%$ [$-36.0\%, -30.7\%$] & 0.78 & 0.41 \\
+full\_chain        & 0.359 [0.337, 0.384] & $-44.6\%$ [$-47.3\%, -41.6\%$] & 0.72 & 0.47 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ==========================================================
+% TABLE III: Matched retraining under full chain with 95% CIs
+% ==========================================================
+\begin{table}[t]
+\centering
+\small
+\caption{Matched retraining under full chain. Recovery is fraction of clean-to-degraded gap closed by retraining. Residual is remaining gap with paired $t$-test across folds.}
+\label{tab:table3}
+\begin{tabular}{lccccc}
+\toprule
+Class & clean & degr. & matched [95\% CI] & recov. & residual ($p$) \\
+\midrule
+Block        & 0.648 & 0.359 & 0.590 [0.571, 0.607] & 79.7\% & 0.059 ($7.3\cdot 10^{-5}$) \\
+Prolongation & 0.635 & 0.601 & 0.610 [0.587, 0.632] & 26.2\% & 0.025 ($0.003$) \\
+SoundRep     & 0.611 & 0.525 & 0.547 [0.519, 0.575] & 24.6\% & 0.065 ($2.4\cdot 10^{-4}$) \\
+WordRep      & 0.631 & 0.529 & 0.619 [0.597, 0.642] & 87.8\% & 0.012 ($0.019$) \\
+Interjection & 0.763 & 0.736 & 0.752 [0.733, 0.770] & 60.0\% & 0.011 ($0.029$) \\
+\bottomrule
+\end{tabular}
+\end{table}
