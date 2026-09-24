@@ -73,30 +73,50 @@ def load_and_filter_sep28k(config):
     return df
 
 def build_working_subset(df, config, subset_size=8000, seed=42):
-    np.random.seed(seed)
-    hard_thresh = config.get("hard_thresh", 1)
-    
-    # Subsets by positivity (count >= hard_thresh)
-    is_block = df["Block"] >= hard_thresh
-    is_prol = df["Prolongation"] >= hard_thresh
-    is_sound = df["SoundRep"] >= hard_thresh
-    is_word = df["WordRep"] >= hard_thresh
-    is_interj = df["Interjection"] >= hard_thresh
-    
-    # All positives for target classes
-    stutter_positives = df[is_block | is_prol | is_sound | is_word | is_interj].copy()
-    fluent_only = df[~(is_block | is_prol | is_sound | is_word | is_interj)].copy()
-    
-    pos_count = len(stutter_positives)
-    needed_fluent = max(1000, subset_size - pos_count)
-    
-    if len(fluent_only) > needed_fluent:
-        sampled_fluent = fluent_only.sample(n=needed_fluent, random_state=seed)
-    else:
-        sampled_fluent = fluent_only
+    """
+    Constructs a deterministic, class-balanced subset of clips from SEP-28k.
+    If subset_size == 8000:
+        Extracts 1,300 clips per dysfluency class (rare classes first) and 1,500 fluent clips
+        to produce an exact N = 8,000 class-balanced evaluation subset.
+    If subset_size is 'full' or >= len(df):
+        Retains all available filtered clips.
+    """
+    if subset_size is None or str(subset_size).lower() == "full":
+        return df.copy().reset_index(drop=True)
         
-    subset_df = pd.concat([stutter_positives, sampled_fluent]).drop_duplicates(subset=["clip_uid"]).reset_index(drop=True)
-    return subset_df
+    target_n = int(subset_size)
+    if target_n == 8000:
+        classes = ['WordRep', 'SoundRep', 'Prolongation', 'Block', 'Interjection']
+        rng = np.random.RandomState(seed)
+        
+        sampled_indices = []
+        for c in classes:
+            pos_idx = df[(df[c] >= 1) & (~df.index.isin(sampled_indices))].index.tolist()
+            n_take = min(len(pos_idx), 1300)
+            chosen = rng.choice(pos_idx, size=n_take, replace=False)
+            sampled_indices.extend(chosen)
+            
+        is_stutter = (df[['Block', 'Prolongation', 'SoundRep', 'WordRep', 'Interjection']] >= 1).any(axis=1)
+        fluent_idx = df[(~is_stutter) & (~df.index.isin(sampled_indices))].index.tolist()
+        needed = target_n - len(sampled_indices)
+        chosen_fluent = rng.choice(fluent_idx, size=needed, replace=False)
+        sampled_indices.extend(chosen_fluent)
+        
+        subset_df = df.loc[sampled_indices].copy().reset_index(drop=True)
+        return subset_df
+    else:
+        # Fallback proportional sampling
+        hard_thresh = config.get("hard_thresh", 1)
+        is_stutter = (df[['Block', 'Prolongation', 'SoundRep', 'WordRep', 'Interjection']] >= hard_thresh).any(axis=1)
+        stutter_df = df[is_stutter].copy()
+        fluent_df = df[~is_stutter].copy()
+        
+        n_stutter = min(len(stutter_df), int(target_n * 0.8))
+        n_fluent = target_n - n_stutter
+        
+        sample_s = stutter_df.sample(n=n_stutter, random_state=seed)
+        sample_f = fluent_df.sample(n=n_fluent, random_state=seed)
+        return pd.concat([sample_s, sample_f]).reset_index(drop=True)
 
 def add_group_kfold_splits(df, n_folds=5, seed=42):
     gkf = GroupKFold(n_splits=n_folds)
@@ -109,32 +129,44 @@ def add_group_kfold_splits(df, n_folds=5, seed=42):
     return df
 
 def add_cross_show_splits(df):
-    """Fallback split for Exp C: Cross-show split."""
-    shows = sorted(df["Show"].unique())
+    """Cross-show split: hold out HVSA and MyStutteringLife."""
     held_out_shows = ["HVSA", "MyStutteringLife"]
     df["cross_show_split"] = df["Show"].apply(lambda s: "test" if s in held_out_shows else "train")
     return df
 
-def prepare_dataset(config_path="icassp/config.yaml", subset_csv=None, seed=42):
+def prepare_dataset(config_path="icassp/config.yaml", subset_csv=None, seed=42, force_rebuild=False):
     config = load_config(config_path)
     cache_dir = config["paths"]["cache_dir"]
     os.makedirs(cache_dir, exist_ok=True)
     
+    manifest_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results")
+    os.makedirs(manifest_dir, exist_ok=True)
+    manifest_csv = os.path.join(manifest_dir, "dataset_manifest.csv")
+    
     if subset_csv is None:
         subset_csv = os.path.join(cache_dir, "sep28k_subset.csv")
         
-    if os.path.exists(subset_csv):
-        print(f"[prep] Loading existing subset from {subset_csv}")
-        return pd.read_csv(subset_csv)
-        
-    print("[prep] Filtering SEP-28k and creating working subset...")
+    if not force_rebuild and os.path.exists(subset_csv):
+        df_existing = pd.read_csv(subset_csv)
+        if len(df_existing) == 8000 and "fold" in df_existing.columns:
+            print(f"[prep] Loading existing valid 8,000-clip subset from {subset_csv}")
+            return df_existing
+            
+    print("[prep] Filtering SEP-28k and creating class-balanced N=8,000 working subset...")
     raw_df = load_and_filter_sep28k(config)
     subset_df = build_working_subset(raw_df, config, subset_size=8000, seed=seed)
     subset_df = add_group_kfold_splits(subset_df, n_folds=config.get("n_folds", 5), seed=seed)
     subset_df = add_cross_show_splits(subset_df)
     
+    # Add explicit majority-vote and any-annotator indicator columns
+    target_cols = ["Block", "Prolongation", "SoundRep", "WordRep", "Interjection"]
+    for col in target_cols:
+        subset_df[f"{col}_any"] = (subset_df[col] >= 1).astype(int)
+        subset_df[f"{col}_maj"] = (subset_df[col] >= 2).astype(int)
+        
     subset_df.to_csv(subset_csv, index=False)
-    print(f"[prep] Saved working subset with {len(subset_df)} clips to {subset_csv}")
+    subset_df.to_csv(manifest_csv, index=False)
+    print(f"[prep] Saved class-balanced N={len(subset_df)} subset to {subset_csv} and {manifest_csv}")
     return subset_df
 
 if __name__ == "__main__":
