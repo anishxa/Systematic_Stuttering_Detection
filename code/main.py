@@ -18,7 +18,9 @@ from train_eval import (
     find_optimal_threshold,
     evaluate_metrics,
     compute_paired_bootstrap_differences,
-    compute_ece
+    compute_ece,
+    select_best_layer_per_fold,
+    compute_tost_equivalence
 )
 from severity import compute_severity_bias_across_episodes
 from figures import (
@@ -28,35 +30,6 @@ from figures import (
     plot_fig4_layer_wise_f1,
     plot_fig5_dose_response
 )
-
-def compute_tost_equivalence(c_vals, d_vals, margin=0.02):
-    """
-    Two One-Sided Tests (TOST) for equivalence within margin [-margin, +margin].
-    H0: |mean(d_vals) - mean(c_vals)| >= margin
-    H1: -margin < mean(d_vals) - mean(c_vals) < margin
-    """
-    diffs = np.array(d_vals) - np.array(c_vals)
-    n = len(diffs)
-    mean_diff = float(np.mean(diffs))
-    se = float(np.std(diffs, ddof=1) / np.sqrt(n)) if n > 1 else 1e-6
-    
-    # Test lower bound: diff > -margin
-    t_lower = (mean_diff - (-margin)) / max(se, 1e-9)
-    # Test upper bound: diff < margin
-    t_upper = (margin - mean_diff) / max(se, 1e-9)
-    
-    from scipy.stats import t
-    df_deg = n - 1
-    p_lower = float(1.0 - t.cdf(t_lower, df=df_deg))
-    p_upper = float(1.0 - t.cdf(t_upper, df=df_deg))
-    p_tost = max(p_lower, p_upper)
-    is_equivalent = bool(p_tost < 0.05)
-    return {
-        "mean_diff": mean_diff,
-        "se": se,
-        "p_tost": p_tost,
-        "is_equivalent": is_equivalent
-    }
 
 def run_pipeline(config_path="config.yaml"):
     wall_clock = {}
@@ -97,65 +70,34 @@ def run_pipeline(config_path="config.yaml"):
         print(f"  {c:15s} | Count >= 1: {pos_any:4d} ({pos_any/len(df_subset)*100:5.2f}%) | Count >= 2: {pos_maj:4d} ({pos_maj/len(df_subset)*100:5.2f}%)")
         
     # ---------------------------------------------------------
-    # STEP 2: Leakage-Free Nested Layer Selection
+    # STEP 2: Leakage-Free Nested Layer Selection per Fold
     # ---------------------------------------------------------
     t0 = time.time()
     print("\n[STEP 2] Performing leakage-free nested layer selection across 13 WavLM layers...")
     clean_feats, _ = extract_features_for_subset(df_subset, "clean", corpus="sep28k_clean", config_path=config_path)
     
-    layer_scores = []
-    best_layer = 7
-    best_macro_f1 = -1.0
+    best_layer_by_fold = select_best_layer_per_fold(
+        df_subset, clean_feats, target_cols, hard_thresh=hard_thresh,
+        seed=cfg["random_seed"], n_folds=cfg["n_folds"], results_dir=results_dir
+    )
+    unique_needed_layers = sorted(list(set(best_layer_by_fold.values())))
+    print(f"\n>>> Selected Layers by Fold: {best_layer_by_fold}")
+    print(f">>> Unique Layers Needed across Folds: {unique_needed_layers}")
     
-    cache_ver = cfg.get("cache_version", "v4")
-    layer_cache_file = os.path.join(cache_dir, f"layer_selection_results_{cache_ver}.json")
-    if os.path.exists(layer_cache_file):
-        with open(layer_cache_file) as f:
-            layer_res = json.load(f)
-            layer_scores = layer_res["layer_scores"]
-            best_layer = layer_res["best_layer"]
-            best_macro_f1 = layer_res["best_macro_f1"]
-            print(f"[layer selection] Loaded cached layer selection: Best Layer = {best_layer} (Macro F1 = {best_macro_f1:.4f})")
-    else:
-        # Nested layer selection: for each outer fold k, evaluate ONLY inside outer training pool
-        # Inner train folds = [j != k and j != (k+1)%5], Inner val fold = (k+1)%5. Test fold k is unobserved!
-        for layer_idx in range(13):
-            fold_macro_f1s = []
-            for fold in range(cfg["n_folds"]):
-                inner_val_fold = (fold + 1) % cfg["n_folds"]
-                inner_tr_folds = [f for f in range(cfg["n_folds"]) if f != fold and f != inner_val_fold]
-                
-                tr_mask = df_subset["fold"].isin(inner_tr_folds).values
-                va_mask = (df_subset["fold"] == inner_val_fold).values
-                
-                df_tr = df_subset[tr_mask].reset_index(drop=True)
-                df_va = df_subset[va_mask].reset_index(drop=True)
-                
-                X_tr = clean_feats[layer_idx][tr_mask]
-                X_va = clean_feats[layer_idx][va_mask]
-                
-                clfs = train_ovr_classifiers(X_tr, df_tr, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"])
-                eval_res = evaluate_ovr_classifiers(clfs, X_va, df_va, target_cols, hard_thresh=hard_thresh)
-                
-                m_f1 = np.mean([eval_res[c]["f1"] for c in target_cols])
-                fold_macro_f1s.append(m_f1)
-                
-            avg_macro_f1 = float(np.mean(fold_macro_f1s))
-            layer_scores.append({"layer": layer_idx, "macro_f1": avg_macro_f1})
-            print(f"  Layer {layer_idx:2d} | Nested Inner Val Macro F1: {avg_macro_f1:.4f}")
-            
-            if avg_macro_f1 > best_macro_f1:
-                best_macro_f1 = avg_macro_f1
-                best_layer = layer_idx
-                
-        with open(layer_cache_file, "w") as f:
-            json.dump({"layer_scores": layer_scores, "best_layer": best_layer, "best_macro_f1": best_macro_f1}, f, indent=2)
-            
+    # Generate Figure 4 from inner-CV layer scores
+    sel_json = os.path.join(results_dir, "selected_layers_by_fold.json")
+    if os.path.exists(sel_json):
+        with open(sel_json) as f:
+            layer_records = json.load(f)
+        mean_layer_scores = []
+        for l in range(13):
+            f1s = [layer_records[str(k)]["layer_scores"][str(l)] for k in range(cfg["n_folds"])]
+            mean_layer_scores.append({"layer": l, "macro_f1": float(np.mean(f1s))})
+        layer_df = pd.DataFrame(mean_layer_scores)
+        rep_layer = int(np.round(np.mean(list(best_layer_by_fold.values()))))
+        plot_fig4_layer_wise_f1(layer_df, rep_layer, out_pdf=os.path.join(figures_dir, "fig4_layer_selection.pdf"))
+        
     wall_clock["step2_layer_selection"] = time.time() - t0
-    print(f"\n>>> Selected Layer {best_layer} (Macro F1 = {best_macro_f1:.4f}). Layer choice frozen for all experiments.")
-    
-    layer_df = pd.DataFrame(layer_scores)
-    plot_fig4_layer_wise_f1(layer_df, best_layer, out_pdf=os.path.join(figures_dir, "fig4_layer_selection.pdf"))
     
     # ---------------------------------------------------------
     # STEP 3: Feature Extraction & Silence Removal across Conditions
@@ -163,65 +105,93 @@ def run_pipeline(config_path="config.yaml"):
     t0 = time.time()
     print("\n[STEP 3] Extracting features and clip-level silence statistics for all conditions...")
     all_condition_feats = {}
+    cache_ver = cfg.get("cache_version", "v4")
     
-    X_clean_best = clean_feats[best_layer]
-    all_condition_feats["clean"] = X_clean_best
-    
+    for cond in conditions:
+        print(f"\nProcessing condition: {cond}")
+        if cond == "clean":
+            all_condition_feats["clean"] = {l: clean_feats[l] for l in unique_needed_layers}
+        else:
+            cond_feats_dict, _ = extract_features_for_subset(
+                df_subset, cond, corpus="sep28k", config_path=config_path, layer_indices=unique_needed_layers
+            )
+            all_condition_feats[cond] = cond_feats_dict
+            
+    print("\n[STEP 3] Verifying and computing clip-level silence statistics...")
+    silence_csv_path = os.path.join(results_dir, "silence_stats.csv")
+    existing_silence = pd.DataFrame()
+    if os.path.exists(silence_csv_path):
+        try:
+            existing_silence = pd.read_csv(silence_csv_path)
+        except Exception:
+            existing_silence = pd.DataFrame()
+            
     silence_records = []
     padding_counts = {}
     retained_durations = {}
     
     for cond in conditions:
-        print(f"\nProcessing condition: {cond}")
-        if cond != "clean":
-            cond_feats_dict, _ = extract_features_for_subset(
-                df_subset, cond, corpus="sep28k", config_path=config_path, layer_indices=[best_layer]
-            )
-            all_condition_feats[cond] = cond_feats_dict[best_layer]
-            
-        print(f"  Computing silence statistics for {cond}...")
-        padded_count = 0
-        ret_dur_list = []
-        
-        for _, r in df_subset.iterrows():
-            uid = r["clip_uid"]
-            c_aud, sr = load_audio_16k(r["file_path"])
-            
-            if cond == "clean":
-                d_aud = c_aud
-                was_padded = False
-            else:
-                cached_deg = os.path.join(degraded_dir, cond, f"{uid}.wav")
-                if os.path.exists(cached_deg):
-                    d_aud, _ = load_audio_16k(cached_deg)
-                else:
-                    d_aud, _ = process_degradation(c_aud, cond, sr=sr)
-                was_padded = len(d_aud) < int(sr * 0.4)
+        pad_meta_file = os.path.join(cache_dir, f"sep28k_{cond}_{cache_ver}_padding_meta.json")
+        pad_meta = {}
+        if os.path.exists(pad_meta_file):
+            with open(pad_meta_file) as f:
+                pad_meta = json.load(f)
                 
-            if was_padded:
-                padded_count += 1
-                
-            stats = compute_silence_removal_statistic(c_aud, d_aud, sr=sr)
-            silence_records.append({
-                "clip_uid": uid,
-                "condition": cond,
-                "silence_removed_frac": stats["silence_removed_frac"],
-                "duration_reduction_frac": stats["duration_reduction_frac"]
-            })
-            ret_dur_list.append(1.0 - stats["duration_reduction_frac"])
-            
+        padded_count = sum(1 for m in pad_meta.values() if m.get("was_padded", False))
         padding_counts[cond] = padded_count
-        retained_durations[cond] = float(np.mean(ret_dur_list))
         
+        cond_existing = existing_silence[existing_silence["condition"] == cond] if not existing_silence.empty and "condition" in existing_silence.columns else pd.DataFrame()
+        if len(cond_existing) == len(df_subset):
+            for _, r in cond_existing.iterrows():
+                silence_records.append({
+                    "clip_uid": r["clip_uid"],
+                    "condition": cond,
+                    "silence_removed_frac": r["silence_removed_frac"],
+                    "duration_reduction_frac": r["duration_reduction_frac"]
+                })
+            retained_durations[cond] = float(1.0 - cond_existing["duration_reduction_frac"].mean())
+        else:
+            print(f"  Computing silence statistics for {cond} (N = {len(df_subset)})...")
+            ret_dur_list = []
+            for _, r in df_subset.iterrows():
+                uid = r["clip_uid"]
+                c_aud, sr = load_audio_16k(r["file_path"])
+                
+                if cond == "clean":
+                    d_aud = c_aud
+                    actual_retained_samples = len(c_aud)
+                else:
+                    cached_deg = os.path.join(degraded_dir, cond, f"{uid}.wav")
+                    if os.path.exists(cached_deg):
+                        d_aud, _ = load_audio_16k(cached_deg)
+                    else:
+                        d_aud, _ = process_degradation(c_aud, cond, sr=sr, clip_uid=uid)
+                        
+                    if uid in pad_meta:
+                        actual_retained_samples = pad_meta[uid]["actual_retained_samples"]
+                    else:
+                        actual_retained_samples = 0 if (len(d_aud) == int(sr * 0.4) and np.all(d_aud == 0)) else len(d_aud)
+                        
+                stats = compute_silence_removal_statistic(c_aud, d_aud, sr=sr, actual_retained_samples=actual_retained_samples)
+                silence_records.append({
+                    "clip_uid": uid,
+                    "condition": cond,
+                    "silence_removed_frac": stats["silence_removed_frac"],
+                    "duration_reduction_frac": stats["duration_reduction_frac"]
+                })
+                ret_dur_list.append(1.0 - stats["duration_reduction_frac"])
+            retained_durations[cond] = float(np.mean(ret_dur_list))
+            
     df_silence = pd.DataFrame(silence_records)
-    df_silence.to_csv(os.path.join(results_dir, "silence_stats.csv"), index=False)
+    df_silence.to_csv(silence_csv_path, index=False)
     
     with open(os.path.join(results_dir, "padding_counts.json"), "w") as f:
         json.dump(padding_counts, f, indent=2)
         
     cond_silence_means = df_silence.groupby("condition")["silence_removed_frac"].mean().to_dict()
+    cond_dur_means = df_silence.groupby("condition")["duration_reduction_frac"].mean().to_dict()
     for cond in conditions:
-        print(f"  {cond:17s} | Mean Silence Rem: {cond_silence_means[cond]:.4f} | Retained Dur: {retained_durations[cond]:.4f} | Padded Clips: {padding_counts[cond]}/{len(df_subset)}")
+        print(f"  {cond:19s} | Silence Rem: {cond_silence_means[cond]:.4f} | Dur Lost: {cond_dur_means[cond]:.4f} | Padded Clips: {padding_counts[cond]}/{len(df_subset)}")
         
     wall_clock["step3_feature_extraction"] = time.time() - t0
     
@@ -232,10 +202,20 @@ def run_pipeline(config_path="config.yaml"):
     print("\n[STEP 4] Executing Experiment A (Comprehensive Degradation, Multi-Threshold & Calibration)...")
     
     tidy_rows = []
+    out_of_fold_records = []
     clean_test_predictions = {}
+    clean_val_test_predictions = {}
     degraded_test_predictions = {cond: {} for cond in conditions}
+    degraded_cln_val_predictions = {cond: {} for cond in conditions}
+    degraded_deg_val_predictions = {cond: {} for cond in conditions}
+    matched_test_predictions = {cond: {} for cond in conditions}
+    matched_val_predictions = {cond: {} for cond in conditions}
+    mlp_test_predictions = {cond: {} for cond in conditions}
     
     for fold in range(cfg["n_folds"]):
+        best_layer = best_layer_by_fold[fold]
+        print(f"\n--- Outer Fold {fold} (Selected Layer = {best_layer}) ---")
+        
         tr_mask = (df_subset["fold"] != fold).values
         te_mask = (df_subset["fold"] == fold).values
         
@@ -250,8 +230,8 @@ def run_pipeline(config_path="config.yaml"):
         df_inner_tr = df_train[inner_tr_mask_tr].reset_index(drop=True)
         df_inner_val = df_train[inner_val_mask_tr].reset_index(drop=True)
         
-        X_tr_clean = all_condition_feats["clean"][tr_mask]
-        X_te_clean = all_condition_feats["clean"][te_mask]
+        X_tr_clean = all_condition_feats["clean"][best_layer][tr_mask]
+        X_te_clean = all_condition_feats["clean"][best_layer][te_mask]
         
         # 1. Train linear probe on outer train set clean features
         clfs_clean = train_ovr_classifiers(X_tr_clean, df_train, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"])
@@ -274,16 +254,44 @@ def run_pipeline(config_path="config.yaml"):
             
         # Evaluate Clean on test fold
         eval_clean_fixed = evaluate_ovr_classifiers(clfs_clean, X_te_clean, df_test, target_cols, hard_thresh=hard_thresh)
+        eval_clean_cln_val = evaluate_ovr_classifiers(clfs_clean, X_te_clean, df_test, target_cols, hard_thresh=hard_thresh, thresholds=clean_val_thresholds)
         eval_clean_mlp = evaluate_ovr_classifiers(clfs_mlp, X_te_clean, df_test, target_cols, hard_thresh=hard_thresh)
         eval_clean_maj = evaluate_ovr_classifiers(clfs_clean, X_te_clean, df_test, target_cols, hard_thresh=2)
         
         clean_test_predictions[fold] = (df_test, eval_clean_fixed)
+        clean_val_test_predictions[fold] = (df_test, eval_clean_cln_val)
+        mlp_test_predictions["clean"][fold] = (df_test, eval_clean_mlp)
         
+        # Record Clean out-of-fold predictions
+        for i, uid in enumerate(df_test["clip_uid"].values):
+            for c in target_cols:
+                y_t = int(df_test[c].values[i] >= hard_thresh)
+                prob = float(eval_clean_fixed[c]["probs"][i])
+                prob_mlp = float(eval_clean_mlp[c]["probs"][i])
+                th_cv = clean_val_thresholds[c]
+                
+                out_of_fold_records.append({
+                    "clip_uid": uid, "fold": fold, "condition": "clean", "class": c,
+                    "y_true": y_t, "y_prob": prob, "y_pred": int(prob >= 0.5), "threshold_policy": "fixed_0.5"
+                })
+                out_of_fold_records.append({
+                    "clip_uid": uid, "fold": fold, "condition": "clean", "class": c,
+                    "y_true": y_t, "y_prob": prob, "y_pred": int(prob >= th_cv), "threshold_policy": "clean_val_tuned"
+                })
+                out_of_fold_records.append({
+                    "clip_uid": uid, "fold": fold, "condition": "clean", "class": c,
+                    "y_true": y_t, "y_prob": prob_mlp, "y_pred": int(prob_mlp >= 0.5), "threshold_policy": "mlp_head"
+                })
+                
         for c in target_cols:
             for metric in ["f1", "precision", "recall", "auc", "pr_auc", "ece", "brier"]:
                 tidy_rows.append({
                     "corpus": "sep28k", "experiment": "clean_baseline", "condition": "clean",
                     "class": c, "fold": fold, "metric": metric, "value": eval_clean_fixed[c][metric]
+                })
+                tidy_rows.append({
+                    "corpus": "sep28k", "experiment": "clean_val_tuned", "condition": "clean",
+                    "class": c, "fold": fold, "metric": metric, "value": eval_clean_cln_val[c][metric]
                 })
                 tidy_rows.append({
                     "corpus": "sep28k", "experiment": "clean_mlp_baseline", "condition": "clean",
@@ -296,13 +304,15 @@ def run_pipeline(config_path="config.yaml"):
                 
         # Evaluate all degraded conditions on test fold
         for cond in conditions:
-            X_te_cond = all_condition_feats[cond][te_mask]
-            X_tr_cond = all_condition_feats[cond][tr_mask]
+            if cond == "clean":
+                continue
+                
+            X_te_cond = all_condition_feats[cond][best_layer][te_mask]
+            X_tr_cond = all_condition_feats[cond][best_layer][tr_mask]
             
-            # Find degraded-val optimal thresholds using inner validation
+            # Find degraded-val optimal thresholds using inner validation with clean probe
             X_in_tr_deg = X_tr_cond[inner_tr_mask_tr]
             X_in_va_deg = X_tr_cond[inner_val_mask_tr]
-            clfs_inner_deg = train_ovr_classifiers(X_in_tr_deg, df_inner_tr, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"])
             
             deg_val_thresholds = {}
             for c in target_cols:
@@ -311,22 +321,79 @@ def run_pipeline(config_path="config.yaml"):
                 opt_th_d, _ = find_optimal_threshold(y_val_d, p_val_d)
                 deg_val_thresholds[c] = opt_th_d
                 
-            # A. Deployment (Fixed threshold = 0.5)
-            eval_dep_fixed = evaluate_ovr_classifiers(clfs_clean, X_te_cond, df_test, target_cols, hard_thresh=hard_thresh)
-            # B. Deployment (Clean-val tuned threshold)
-            eval_dep_cln_val = evaluate_ovr_classifiers(clfs_clean, X_te_cond, df_test, target_cols, hard_thresh=hard_thresh, thresholds=clean_val_thresholds)
-            # C. Deployment (Degraded-val tuned threshold)
-            eval_dep_deg_val = evaluate_ovr_classifiers(clfs_clean, X_te_cond, df_test, target_cols, hard_thresh=hard_thresh, thresholds=deg_val_thresholds)
-            
-            # D. Matched retraining (Upper bound, trained on degraded training set)
+            # Train inner matched probe on inner degraded training features for matched-val tuning
+            clfs_inner_matched = train_ovr_classifiers(X_in_tr_deg, df_inner_tr, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"])
+            matched_val_thresholds = {}
+            for c in target_cols:
+                p_val_m = clfs_inner_matched[c].predict_proba(X_in_va_deg)[:, 1]
+                y_val_d = (df_inner_val[c].values >= hard_thresh).astype(int)
+                opt_th_m, _ = find_optimal_threshold(y_val_d, p_val_m)
+                matched_val_thresholds[c] = opt_th_m
+                
+            # Train matched probe on full outer train set degraded features
             clfs_matched = train_ovr_classifiers(X_tr_cond, df_train, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"])
-            eval_matched = evaluate_ovr_classifiers(clfs_matched, X_te_cond, df_test, target_cols, hard_thresh=hard_thresh)
             
-            # E. Majority-vote evaluation (count >= 2)
+            # Policy 1: Fixed 0.5 (Unmitigated)
+            eval_dep_fixed = evaluate_ovr_classifiers(clfs_clean, X_te_cond, df_test, target_cols, hard_thresh=hard_thresh)
+            # Policy 2: Clean-val tuned threshold
+            eval_dep_cln_val = evaluate_ovr_classifiers(clfs_clean, X_te_cond, df_test, target_cols, hard_thresh=hard_thresh, thresholds=clean_val_thresholds)
+            # Policy 3: Degraded-val tuned threshold
+            eval_dep_deg_val = evaluate_ovr_classifiers(clfs_clean, X_te_cond, df_test, target_cols, hard_thresh=hard_thresh, thresholds=deg_val_thresholds)
+            # Policy 4a: Matched retraining (Fixed 0.5)
+            eval_matched_fixed = evaluate_ovr_classifiers(clfs_matched, X_te_cond, df_test, target_cols, hard_thresh=hard_thresh)
+            # Policy 4b: Matched retraining (Matched-val tuned)
+            eval_matched_val = evaluate_ovr_classifiers(clfs_matched, X_te_cond, df_test, target_cols, hard_thresh=hard_thresh, thresholds=matched_val_thresholds)
+            # Control: Majority-vote (count >= 2)
             eval_dep_maj = evaluate_ovr_classifiers(clfs_clean, X_te_cond, df_test, target_cols, hard_thresh=2)
+            # Control: Non-linear MLP baseline evaluated on degraded test features
+            eval_dep_mlp = evaluate_ovr_classifiers(clfs_mlp, X_te_cond, df_test, target_cols, hard_thresh=hard_thresh)
             
             degraded_test_predictions[cond][fold] = (df_test, eval_dep_fixed)
+            degraded_cln_val_predictions[cond][fold] = (df_test, eval_dep_cln_val)
+            degraded_deg_val_predictions[cond][fold] = (df_test, eval_dep_deg_val)
+            matched_test_predictions[cond][fold] = (df_test, eval_matched_fixed)
+            matched_val_predictions[cond][fold] = (df_test, eval_matched_val)
+            mlp_test_predictions[cond][fold] = (df_test, eval_dep_mlp)
             
+            # Record Degraded out-of-fold predictions
+            for i, uid in enumerate(df_test["clip_uid"].values):
+                for c in target_cols:
+                    y_t = int(df_test[c].values[i] >= hard_thresh)
+                    prob_unmit = float(eval_dep_fixed[c]["probs"][i])
+                    prob_matched = float(eval_matched_fixed[c]["probs"][i])
+                    prob_mlp = float(eval_dep_mlp[c]["probs"][i])
+                    
+                    # Policy 1: fixed_0.5
+                    out_of_fold_records.append({
+                        "clip_uid": uid, "fold": fold, "condition": cond, "class": c,
+                        "y_true": y_t, "y_prob": prob_unmit, "y_pred": int(prob_unmit >= 0.5), "threshold_policy": "fixed_0.5"
+                    })
+                    # Policy 2: clean_val_tuned
+                    out_of_fold_records.append({
+                        "clip_uid": uid, "fold": fold, "condition": cond, "class": c,
+                        "y_true": y_t, "y_prob": prob_unmit, "y_pred": int(prob_unmit >= clean_val_thresholds[c]), "threshold_policy": "clean_val_tuned"
+                    })
+                    # Policy 3: deg_val_tuned
+                    out_of_fold_records.append({
+                        "clip_uid": uid, "fold": fold, "condition": cond, "class": c,
+                        "y_true": y_t, "y_prob": prob_unmit, "y_pred": int(prob_unmit >= deg_val_thresholds[c]), "threshold_policy": "deg_val_tuned"
+                    })
+                    # Policy 4a: matched_fixed_0.5
+                    out_of_fold_records.append({
+                        "clip_uid": uid, "fold": fold, "condition": cond, "class": c,
+                        "y_true": y_t, "y_prob": prob_matched, "y_pred": int(prob_matched >= 0.5), "threshold_policy": "matched_fixed_0.5"
+                    })
+                    # Policy 4b: matched_val_tuned
+                    out_of_fold_records.append({
+                        "clip_uid": uid, "fold": fold, "condition": cond, "class": c,
+                        "y_true": y_t, "y_prob": prob_matched, "y_pred": int(prob_matched >= matched_val_thresholds[c]), "threshold_policy": "matched_val_tuned"
+                    })
+                    # Control: mlp_head
+                    out_of_fold_records.append({
+                        "clip_uid": uid, "fold": fold, "condition": cond, "class": c,
+                        "y_true": y_t, "y_prob": prob_mlp, "y_pred": int(prob_mlp >= 0.5), "threshold_policy": "mlp_head"
+                    })
+                    
             for c in target_cols:
                 for metric in ["f1", "precision", "recall", "auc", "pr_auc", "ece", "brier"]:
                     tidy_rows.append({
@@ -342,17 +409,33 @@ def run_pipeline(config_path="config.yaml"):
                         "class": c, "fold": fold, "metric": metric, "value": eval_dep_deg_val[c][metric]
                     })
                     tidy_rows.append({
-                        "corpus": "sep28k", "experiment": "matched_retraining", "condition": cond,
-                        "class": c, "fold": fold, "metric": metric, "value": eval_matched[c][metric]
+                        "corpus": "sep28k", "experiment": "matched_retraining_fixed", "condition": cond,
+                        "class": c, "fold": fold, "metric": metric, "value": eval_matched_fixed[c][metric]
+                    })
+                    tidy_rows.append({
+                        "corpus": "sep28k", "experiment": "matched_retraining_val", "condition": cond,
+                        "class": c, "fold": fold, "metric": metric, "value": eval_matched_val[c][metric]
                     })
                     tidy_rows.append({
                         "corpus": "sep28k", "experiment": "majority_vote_fixed", "condition": cond,
                         "class": c, "fold": fold, "metric": metric, "value": eval_dep_maj[c][metric]
                     })
+                    tidy_rows.append({
+                        "corpus": "sep28k", "experiment": "mlp_head_degraded", "condition": cond,
+                        "class": c, "fold": fold, "metric": metric, "value": eval_dep_mlp[c][metric]
+                    })
                     
     df_tidy = pd.DataFrame(tidy_rows)
     df_tidy.to_csv(os.path.join(results_dir, "all_metrics.csv"), index=False)
     print(f"[all_metrics.csv] Saved {len(df_tidy)} rows of evaluated metrics.")
+    
+    # Save per-clip out-of-fold predictions
+    df_oof = pd.DataFrame(out_of_fold_records)
+    oof_csv_path = os.path.join(results_dir, "out_of_fold_predictions.csv")
+    oof_gz_path = os.path.join(results_dir, "out_of_fold_predictions.csv.gz")
+    df_oof.to_csv(oof_csv_path, index=False)
+    df_oof.to_csv(oof_gz_path, index=False, compression="gzip")
+    print(f"[out_of_fold_predictions.csv] Saved {len(df_oof)} per-clip prediction records (also compressed to .csv.gz).")
     
     # ---------------------------------------------------------
     # STATISTICAL EVALUATION: CIs, TOST, TABLE 1, 2, 3
@@ -373,30 +456,57 @@ def run_pipeline(config_path="config.yaml"):
         for c in target_cols
     }
     
+    # Compute clean baseline bootstrap CIs (using identical bootstrap resampling)
+    paired_diffs_clean = compute_paired_bootstrap_differences(
+        df_concat_test, concat_eval_clean, concat_eval_clean, target_cols, n_resamples=1000, seed=cfg["random_seed"]
+    )
+    
     table1_rows = []
     table2_rows = []
-    paired_ci_records = []
     codec_tost_records = []
+    all_paired_diffs = {}
     
-    # Clean baseline CIs
-    ci_clean = {}
+    # Clean baseline in Table 1
     for c in target_cols:
-        clean_f1_vals = df_tidy[(df_tidy["experiment"] == "clean_baseline") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
-        clean_auc_vals = df_tidy[(df_tidy["experiment"] == "clean_baseline") & (df_tidy["class"] == c) & (df_tidy["metric"] == "auc")]["value"].values
-        ci_clean[c] = {
-            "f1_mean": float(clean_f1_vals.mean()),
-            "f1_sd": float(clean_f1_vals.std()),
-            "auc_mean": float(clean_auc_vals.mean()),
-            "auc_sd": float(clean_auc_vals.std())
-        }
+        clean_fold_f1s = df_tidy[(df_tidy["experiment"] == "clean_baseline") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
+        f1_sd = float(np.std(clean_fold_f1s, ddof=1)) if len(clean_fold_f1s) > 1 else 0.0
+        
+        res_c = paired_diffs_clean[c]
         table1_rows.append({
             "condition": "clean", "class": c,
-            "f1": ci_clean[c]["f1_mean"], "f1_ci_low": ci_clean[c]["f1_mean"] - 1.96 * ci_clean[c]["f1_sd"] / np.sqrt(5),
-            "f1_ci_high": ci_clean[c]["f1_mean"] + 1.96 * ci_clean[c]["f1_sd"] / np.sqrt(5),
-            "auc": ci_clean[c]["auc_mean"], "auc_ci_low": ci_clean[c]["auc_mean"] - 1.96 * ci_clean[c]["auc_sd"] / np.sqrt(5),
-            "auc_ci_high": ci_clean[c]["auc_mean"] + 1.96 * ci_clean[c]["auc_sd"] / np.sqrt(5)
+            "f1": res_c["clean_f1"],
+            "f1_ci_low": res_c["clean_f1_ci_low"],
+            "f1_ci_high": res_c["clean_f1_ci_high"],
+            "fold_sd": f1_sd,
+            "auc": res_c["clean_auc"],
+            "auc_ci_low": res_c["clean_auc_ci_low"],
+            "auc_ci_high": res_c["clean_auc_ci_high"],
+            "prauc": res_c["clean_prauc"],
+            "prauc_ci_low": res_c["clean_prauc_ci_low"],
+            "prauc_ci_high": res_c["clean_prauc_ci_high"]
         })
         
+    # Table 2 clean row for Block
+    table2_rows.append({
+        "condition": "clean", "class": "Block",
+        "clean_f1": paired_diffs_clean["Block"]["clean_f1"],
+        "degraded_f1": paired_diffs_clean["Block"]["clean_f1"],
+        "delta_f1": 0.0,
+        "delta_f1_ci_low": 0.0,
+        "delta_f1_ci_high": 0.0,
+        "rel_delta_pct": 0.0,
+        "clean_auc": paired_diffs_clean["Block"]["clean_auc"],
+        "degraded_auc": paired_diffs_clean["Block"]["clean_auc"],
+        "delta_auc": 0.0,
+        "delta_auc_ci_low": 0.0,
+        "delta_auc_ci_high": 0.0,
+        "p_val_raw": 1.0,
+        "p_val_holm": 1.0,
+        "rho": 0.0,
+        "delta": 0.0
+    })
+    
+    # Degraded conditions evaluation
     for cond in conditions:
         if cond == "clean":
             continue
@@ -415,39 +525,50 @@ def run_pipeline(config_path="config.yaml"):
         paired_diffs = compute_paired_bootstrap_differences(
             df_concat_test, concat_eval_clean, concat_eval_deg, target_cols, n_resamples=1000, seed=cfg["random_seed"]
         )
+        all_paired_diffs[cond] = paired_diffs
         
         for c in target_cols:
-            deg_f1_vals = df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
-            deg_auc_vals = df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "auc")]["value"].values
-            deg_f1_mean = float(deg_f1_vals.mean())
-            deg_auc_mean = float(deg_auc_vals.mean())
-            
             p_res = paired_diffs[c]
+            deg_fold_f1s = df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].values
+            deg_fold_sd = float(np.std(deg_fold_f1s, ddof=1)) if len(deg_fold_f1s) > 1 else 0.0
             
+            # Table 1: Separate un-recentered empirical CIs
             table1_rows.append({
                 "condition": cond, "class": c,
-                "f1": deg_f1_mean,
-                "f1_ci_low": deg_f1_mean + p_res["delta_f1_ci_low"] - p_res["delta_f1_mean"],
-                "f1_ci_high": deg_f1_mean + p_res["delta_f1_ci_high"] - p_res["delta_f1_mean"],
-                "auc": deg_auc_mean,
-                "auc_ci_low": deg_auc_mean + p_res["delta_auc_ci_low"] - p_res["delta_auc_mean"],
-                "auc_ci_high": deg_auc_mean + p_res["delta_auc_ci_high"] - p_res["delta_auc_mean"]
+                "f1": p_res["degraded_f1"],
+                "f1_ci_low": p_res["degraded_f1_ci_low"],
+                "f1_ci_high": p_res["degraded_f1_ci_high"],
+                "fold_sd": deg_fold_sd,
+                "auc": p_res["degraded_auc"],
+                "auc_ci_low": p_res["degraded_auc_ci_low"],
+                "auc_ci_high": p_res["degraded_auc_ci_high"],
+                "prauc": p_res["degraded_prauc"],
+                "prauc_ci_low": p_res["degraded_prauc_ci_low"],
+                "prauc_ci_high": p_res["degraded_prauc_ci_high"]
             })
+            
+            # Table 2: Signed delta and relative drop
+            rel_drop = ((p_res["degraded_f1"] - p_res["clean_f1"]) / max(p_res["clean_f1"], 1e-6)) * 100.0
+            rho_val = float(cond_silence_means.get(cond, 0.0))
+            delta_val = float(cond_dur_means.get(cond, 0.0))
             
             table2_rows.append({
                 "condition": cond, "class": c,
-                "clean_f1": ci_clean[c]["f1_mean"],
-                "degraded_f1": deg_f1_mean,
-                "delta_f1": p_res["delta_f1_mean"],
+                "clean_f1": p_res["clean_f1"],
+                "degraded_f1": p_res["degraded_f1"],
+                "delta_f1": p_res["delta_f1"],
                 "delta_f1_ci_low": p_res["delta_f1_ci_low"],
                 "delta_f1_ci_high": p_res["delta_f1_ci_high"],
-                "clean_auc": ci_clean[c]["auc_mean"],
-                "degraded_auc": deg_auc_mean,
-                "delta_auc": p_res["delta_auc_mean"],
+                "rel_delta_pct": rel_drop,
+                "clean_auc": p_res["clean_auc"],
+                "degraded_auc": p_res["degraded_auc"],
+                "delta_auc": p_res["delta_auc"],
                 "delta_auc_ci_low": p_res["delta_auc_ci_low"],
                 "delta_auc_ci_high": p_res["delta_auc_ci_high"],
                 "p_val_raw": p_res["p_val_raw"],
-                "p_val_holm": p_res["p_val_holm"]
+                "p_val_holm": p_res["p_val_holm"],
+                "rho": rho_val,
+                "delta": delta_val
             })
             
             # TOST test for codecs
@@ -460,6 +581,8 @@ def run_pipeline(config_path="config.yaml"):
                     "clean_f1": float(np.mean(clean_fold_f1s)),
                     "degraded_f1": float(np.mean(deg_fold_f1s)),
                     "mean_diff": tost_res["mean_diff"],
+                    "ci_90_low": tost_res["ci_90_low"],
+                    "ci_90_high": tost_res["ci_90_high"],
                     "p_tost": tost_res["p_tost"],
                     "is_equivalent": tost_res["is_equivalent"]
                 })
@@ -473,29 +596,55 @@ def run_pipeline(config_path="config.yaml"):
     df_tost = pd.DataFrame(codec_tost_records)
     df_tost.to_csv(os.path.join(results_dir, "codec_equivalence_results.csv"), index=False)
     
-    # Table 3: Mitigation Summary (Fixed 0.5 vs Clean-Val vs Deg-Val vs Matched Retraining)
+    # Table 3: Comprehensive Mitigation Summary
+    # Compares: fixed_0.5, clean_val_tuned, deg_val_tuned, matched_fixed, matched_val_tuned
     table3_rows = []
     for cond in conditions:
         if cond == "clean":
             continue
         for c in target_cols:
-            f1_unmit = df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
-            f1_cln_val = df_tidy[(df_tidy["experiment"] == "deployment_clean_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
-            f1_deg_val = df_tidy[(df_tidy["experiment"] == "deployment_deg_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
-            f1_matched = df_tidy[(df_tidy["experiment"] == "matched_retraining") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
-            clean_f1 = ci_clean[c]["f1_mean"]
+            clean_row = df_t1[(df_t1["condition"] == "clean") & (df_t1["class"] == c)].iloc[0]
+            clean_f1 = float(clean_row["f1"])
+            clean_prec = float(df_tidy[(df_tidy["experiment"] == "clean_baseline") & (df_tidy["class"] == c) & (df_tidy["metric"] == "precision")]["value"].mean())
+            clean_rec = float(df_tidy[(df_tidy["experiment"] == "clean_baseline") & (df_tidy["class"] == c) & (df_tidy["metric"] == "recall")]["value"].mean())
+            clean_auc = float(clean_row["auc"])
+            
+            f1_unmit = float(df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean())
+            prec_unmit = float(df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "precision")]["value"].mean())
+            rec_unmit = float(df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "recall")]["value"].mean())
+            auc_unmit = float(df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "auc")]["value"].mean())
+            
+            f1_cln_val = float(df_tidy[(df_tidy["experiment"] == "deployment_clean_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean())
+            prec_cln_val = float(df_tidy[(df_tidy["experiment"] == "deployment_clean_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "precision")]["value"].mean())
+            rec_cln_val = float(df_tidy[(df_tidy["experiment"] == "deployment_clean_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "recall")]["value"].mean())
+            
+            f1_deg_val = float(df_tidy[(df_tidy["experiment"] == "deployment_deg_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean())
+            prec_deg_val = float(df_tidy[(df_tidy["experiment"] == "deployment_deg_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "precision")]["value"].mean())
+            rec_deg_val = float(df_tidy[(df_tidy["experiment"] == "deployment_deg_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "recall")]["value"].mean())
+            
+            f1_matched_fix = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean())
+            prec_matched_fix = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "precision")]["value"].mean())
+            rec_matched_fix = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "recall")]["value"].mean())
+            auc_matched = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "auc")]["value"].mean())
+            
+            f1_matched_val = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean())
+            prec_matched_val = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "precision")]["value"].mean())
+            rec_matched_val = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "recall")]["value"].mean())
             
             unmit_drop = clean_f1 - f1_unmit
-            matched_drop = clean_f1 - f1_matched
-            recovery_pct = float(np.clip((f1_matched - f1_unmit) / max(unmit_drop, 1e-6) * 100.0, 0.0, 100.0))
+            matched_drop = clean_f1 - f1_matched_val
+            recovery_pct = float(np.clip((f1_matched_val - f1_unmit) / max(unmit_drop, 1e-6) * 100.0, 0.0, 100.0))
             
             table3_rows.append({
                 "condition": cond, "class": c,
-                "clean_f1": clean_f1,
-                "unmitigated_f1": f1_unmit,
-                "clean_val_tuned_f1": f1_cln_val,
-                "deg_val_tuned_f1": f1_deg_val,
-                "matched_retraining_f1": f1_matched,
+                "clean_f1": clean_f1, "clean_prec": clean_prec, "clean_rec": clean_rec, "clean_auc": clean_auc,
+                "unmitigated_f1": f1_unmit, "unmitigated_prec": prec_unmit, "unmitigated_rec": rec_unmit, "unmitigated_auc": auc_unmit,
+                "clean_val_tuned_f1": f1_cln_val, "clean_val_prec": prec_cln_val, "clean_val_rec": rec_cln_val,
+                "deg_val_tuned_f1": f1_deg_val, "deg_val_prec": prec_deg_val, "deg_val_rec": rec_deg_val,
+                "matched_retraining_fixed_f1": f1_matched_fix, "matched_fixed_prec": prec_matched_fix, "matched_fixed_rec": rec_matched_fix,
+                "matched_retraining_val_f1": f1_matched_val, "matched_val_prec": prec_matched_val, "matched_val_rec": rec_matched_val, "matched_auc": auc_matched,
+                # Legacy column names for backward compatibility
+                "matched_retraining_f1": f1_matched_val,
                 "recovery_pct": recovery_pct,
                 "residual_degradation": matched_drop
             })
@@ -514,12 +663,25 @@ def run_pipeline(config_path="config.yaml"):
             calib_rows.append({"condition": cond, "class": c, "ece": float(ece_val), "brier": float(brier_val)})
     pd.DataFrame(calib_rows).to_csv(os.path.join(results_dir, "calibration_summary.csv"), index=False)
     
-    # Non-linear baseline comparison
+    # Non-linear MLP comparison across clean and degraded conditions
     nl_rows = []
-    for c in target_cols:
-        lin_f1 = df_tidy[(df_tidy["experiment"] == "clean_baseline") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
-        mlp_f1 = df_tidy[(df_tidy["experiment"] == "clean_mlp_baseline") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
-        nl_rows.append({"class": c, "linear_probe_f1": float(lin_f1), "mlp_baseline_f1": float(mlp_f1), "delta_f1": float(mlp_f1 - lin_f1)})
+    compare_conds = [c for c in ["clean", "full_chain", "vad_agg3", "opus_16k_voip", "full_chain_novad"] if c in conditions]
+    for cond in compare_conds:
+        for c in target_cols:
+            lin_exp = "clean_baseline" if cond == "clean" else "deployment_fixed"
+            mlp_exp = "clean_mlp_baseline" if cond == "clean" else "mlp_head_degraded"
+            
+            lin_f1 = df_tidy[(df_tidy["experiment"] == lin_exp) & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
+            lin_auc = df_tidy[(df_tidy["experiment"] == lin_exp) & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "auc")]["value"].mean()
+            mlp_f1 = df_tidy[(df_tidy["experiment"] == mlp_exp) & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
+            mlp_auc = df_tidy[(df_tidy["experiment"] == mlp_exp) & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "auc")]["value"].mean()
+            
+            nl_rows.append({
+                "condition": cond, "class": c,
+                "linear_probe_f1": float(lin_f1), "linear_probe_auc": float(lin_auc),
+                "mlp_baseline_f1": float(mlp_f1), "mlp_baseline_auc": float(mlp_auc),
+                "delta_f1": float(mlp_f1 - lin_f1), "delta_auc": float(mlp_auc - lin_auc)
+            })
     pd.DataFrame(nl_rows).to_csv(os.path.join(results_dir, "nonlinear_baseline_comparison.csv"), index=False)
     
     # Majority-vote comparison
@@ -530,15 +692,23 @@ def run_pipeline(config_path="config.yaml"):
         maj_rows.append({"class": c, "any_annotator_f1": float(any_f1), "majority_vote_f1": float(maj_f1), "delta_f1": float(maj_f1 - any_f1)})
     pd.DataFrame(maj_rows).to_csv(os.path.join(results_dir, "majority_vote_comparison.csv"), index=False)
     
-    # Random deletion comparison (VAD vs Random deletion)
-    if "random_del_30pct" in conditions and "vad_agg3" in conditions:
-        rd_rows = []
-        for c in target_cols:
-            vad_f1 = df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == "vad_agg3") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
-            rd_f1 = df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == "random_del_30pct") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
-            rd_rows.append({"class": c, "vad_agg3_f1": float(vad_f1), "random_del_30pct_f1": float(rd_f1), "delta_f1": float(rd_f1 - vad_f1)})
-        pd.DataFrame(rd_rows).to_csv(os.path.join(results_dir, "random_deletion_comparison.csv"), index=False)
+    # Random deletion comparison (VAD vs Random deletion: matched and 30pct)
+    rd_rows = []
+    for c in target_cols:
+        vad_f1 = df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == "vad_agg3") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean() if "vad_agg3" in conditions else np.nan
+        rd_matched_f1 = df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == "random_del_matched") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean() if "random_del_matched" in conditions else np.nan
+        rd_30_f1 = df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == "random_del_30pct") & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean() if "random_del_30pct" in conditions else np.nan
         
+        rd_rows.append({
+            "class": c,
+            "vad_agg3_f1": float(vad_f1),
+            "random_del_matched_f1": float(rd_matched_f1),
+            "random_del_30pct_f1": float(rd_30_f1),
+            "delta_matched_vs_vad": float(rd_matched_f1 - vad_f1) if not np.isnan(rd_matched_f1) and not np.isnan(vad_f1) else 0.0,
+            "delta_30pct_vs_vad": float(rd_30_f1 - vad_f1) if not np.isnan(rd_30_f1) and not np.isnan(vad_f1) else 0.0
+        })
+    pd.DataFrame(rd_rows).to_csv(os.path.join(results_dir, "random_deletion_comparison.csv"), index=False)
+    
     # Full Chain with vs without VAD
     if "full_chain_novad" in conditions and "full_chain" in conditions:
         fc_rows = []
@@ -554,8 +724,8 @@ def run_pipeline(config_path="config.yaml"):
         if cond == "clean":
             continue
         for c in target_cols:
-            cln_m = ci_clean[c]["f1_mean"]
-            deg_m = df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
+            cln_m = float(df_t1[(df_t1["condition"] == "clean") & (df_t1["class"] == c)]["f1"].iloc[0])
+            deg_m = float(df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean())
             scatter_rows.append({
                 "condition": cond, "class": c, "f1_drop": cln_m - deg_m, "silence_removal_stat": cond_silence_means[cond]
             })
@@ -622,9 +792,11 @@ def run_pipeline(config_path="config.yaml"):
     tr_cs_idx = (df_subset["cross_show_split"] == "train").values
     te_cs_idx = (df_subset["cross_show_split"] == "test").values
     
-    X_tr_cs_clean = all_condition_feats["clean"][tr_cs_idx]
-    X_te_cs_clean = all_condition_feats["clean"][te_cs_idx]
-    X_te_cs_fc = all_condition_feats["full_chain"][te_cs_idx]
+    # Use selected layer for fold 0 or rep_layer
+    cs_layer = best_layer_by_fold[0]
+    X_tr_cs_clean = all_condition_feats["clean"][cs_layer][tr_cs_idx]
+    X_te_cs_clean = all_condition_feats["clean"][cs_layer][te_cs_idx]
+    X_te_cs_fc = all_condition_feats["full_chain"][cs_layer][te_cs_idx]
     
     clfs_cs = train_ovr_classifiers(X_tr_cs_clean, df_train_cs, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"])
     eval_cs_clean = evaluate_ovr_classifiers(clfs_cs, X_te_cs_clean, df_test_cs, target_cols, hard_thresh=hard_thresh)
