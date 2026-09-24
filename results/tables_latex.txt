@@ -47,22 +47,22 @@ random\_del\_30pct & 0.630 [0.609, 0.653] & $-1.2\%$ & 0.32 & 0.30 \\
 \end{table}
 
 % ==========================================================
-% TABLE III: Matched retraining & Threshold Tuning under full chain
+% TABLE III: Mitigation under full chain (Pooled Out-of-Fold Predictions)
 % ==========================================================
 \begin{table}[t]
 \centering
 \small
-\caption{Mitigation strategies under full deployment chain. Recovery is fraction of clean-to-degraded gap closed.}
+\caption{Mitigation strategies under full deployment chain evaluated consistently from pooled out-of-fold predictions. Recovery is relative to fixed clean baseline. Note that Deg-Val threshold tuning yields high recall (0.962 for Block) but degraded precision (0.468) without restoring ranking discrimination.}
 \label{tab:table3}
-\begin{tabular}{lccccc}
+\begin{tabular}{lcccccc}
 \toprule
-Class & Clean $F_1$ & Degr. $F_1$ & Deg-Val Thresh & Matched $F_1$ & Recovery \\
+Class & Clean (Fixed) & Clean (Tuned) & Degr. Unmit. & Deg-Val Tuned & Matched (Tuned) & Recovery \\
 \midrule
-Block        & 0.638 & 0.461 & 0.629 & 0.627 & 94.2\% \\
-Prolongation & 0.624 & 0.590 & 0.603 & 0.593 & 8.3\% \\
-SoundRep     & 0.659 & 0.570 & 0.578 & 0.594 & 27.4\% \\
-WordRep      & 0.645 & 0.573 & 0.607 & 0.636 & 87.8\% \\
-Interjection & 0.756 & 0.733 & 0.733 & 0.740 & 30.5\% \\
+Block        & 0.638 & 0.668 & 0.465 & 0.630 & 0.628 & 94.2\% \\
+Prolongation & 0.624 & 0.618 & 0.593 & 0.604 & 0.594 & 1.5\% \\
+SoundRep     & 0.659 & 0.657 & 0.570 & 0.579 & 0.595 & 28.1\% \\
+WordRep      & 0.645 & 0.643 & 0.572 & 0.607 & 0.636 & 87.7\% \\
+Interjection & 0.756 & 0.757 & 0.734 & 0.734 & 0.740 & 29.8\% \\
 \bottomrule
 \end{tabular}
 \end{table}

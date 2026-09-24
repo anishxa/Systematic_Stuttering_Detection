@@ -87,23 +87,24 @@ def generate_latex():
 
         # TABLE III
         f.write("% ==========================================================\n")
-        f.write("% TABLE III: Matched retraining & Threshold Tuning under full chain\n")
+        f.write("% TABLE III: Mitigation under full chain (Pooled Out-of-Fold Predictions)\n")
         f.write("% ==========================================================\n")
         f.write("\\begin{table}[t]\n\\centering\n\\small\n")
-        f.write("\\caption{Mitigation strategies under full deployment chain. Recovery is fraction of clean-to-degraded gap closed.}\n")
+        f.write("\\caption{Mitigation strategies under full deployment chain evaluated consistently from pooled out-of-fold predictions. Recovery is relative to fixed clean baseline. Note that Deg-Val threshold tuning yields high recall (0.962 for Block) but degraded precision (0.468) without restoring ranking discrimination.}\n")
         f.write("\\label{tab:table3}\n")
-        f.write("\\begin{tabular}{lccccc}\n\\toprule\n")
-        f.write("Class & Clean $F_1$ & Degr. $F_1$ & Deg-Val Thresh & Matched $F_1$ & Recovery \\\\\n\\midrule\n")
+        f.write("\\begin{tabular}{lcccccc}\n\\toprule\n")
+        f.write("Class & Clean (Fixed) & Clean (Tuned) & Degr. Unmit. & Deg-Val Tuned & Matched (Tuned) & Recovery \\\\\n\\midrule\n")
         
         fc_t3 = t3[t3["condition"] == "full_chain"]
         for c in target_cols:
             r = fc_t3[fc_t3["class"] == c].iloc[0]
             c_f1 = r["clean_f1"]
+            ct_f1 = r["clean_val_tuned_baseline_f1"]
             d_f1 = r["unmitigated_f1"]
             dv_f1 = r["deg_val_tuned_f1"]
-            m_f1 = r["matched_retraining_f1"]
+            m_f1 = r["matched_retraining_val_f1"]
             rec = r["recovery_pct"]
-            f.write(f"{c:12s} & {c_f1:.3f} & {d_f1:.3f} & {dv_f1:.3f} & {m_f1:.3f} & {rec:.1f}\\% \\\\\n")
+            f.write(f"{c:12s} & {c_f1:.3f} & {ct_f1:.3f} & {d_f1:.3f} & {dv_f1:.3f} & {m_f1:.3f} & {rec:.1f}\\% \\\\\n")
         f.write("\\bottomrule\n\\end{tabular}\n\\end{table}\n")
 
     print(f"Saved updated {out_file}")

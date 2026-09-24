@@ -6,6 +6,7 @@ import yaml
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr, ttest_1samp
+from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from prep import prepare_dataset, load_and_filter_sep28k, load_config
@@ -596,56 +597,75 @@ def run_pipeline(config_path="config.yaml"):
     df_tost = pd.DataFrame(codec_tost_records)
     df_tost.to_csv(os.path.join(results_dir, "codec_equivalence_results.csv"), index=False)
     
-    # Table 3: Comprehensive Mitigation Summary
-    # Compares: fixed_0.5, clean_val_tuned, deg_val_tuned, matched_fixed, matched_val_tuned
+    # Table 3: Comprehensive Mitigation Summary (Generated strictly from pooled out-of-fold predictions)
+    # Compares: clean_fixed, clean_tuned, unmitigated_fixed, clean_val_tuned, deg_val_tuned, matched_fixed, matched_val_tuned
+    clean_fix_res = {}
+    clean_tun_res = {}
+    for c in target_cols:
+        sub_fix = df_oof[(df_oof["condition"] == "clean") & (df_oof["threshold_policy"] == "fixed_0.5") & (df_oof["class"] == c)]
+        sub_tun = df_oof[(df_oof["condition"] == "clean") & (df_oof["threshold_policy"] == "clean_val_tuned") & (df_oof["class"] == c)]
+        y_tr_f, y_pr_f, y_pb_f = sub_fix["y_true"].values, sub_fix["y_pred"].values, sub_fix["y_prob"].values
+        y_tr_t, y_pr_t = sub_tun["y_true"].values, sub_tun["y_pred"].values
+        clean_fix_res[c] = {
+            "f1": float(f1_score(y_tr_f, y_pr_f, zero_division=0)),
+            "prec": float(precision_score(y_tr_f, y_pr_f, zero_division=0)),
+            "rec": float(recall_score(y_tr_f, y_pr_f, zero_division=0)),
+            "auc": float(roc_auc_score(y_tr_f, y_pb_f)) if len(np.unique(y_tr_f)) > 1 else np.nan
+        }
+        clean_tun_res[c] = {
+            "f1": float(f1_score(y_tr_t, y_pr_t, zero_division=0)),
+            "prec": float(precision_score(y_tr_t, y_pr_t, zero_division=0)),
+            "rec": float(recall_score(y_tr_t, y_pr_t, zero_division=0))
+        }
+
     table3_rows = []
     for cond in conditions:
         if cond == "clean":
             continue
         for c in target_cols:
-            clean_row = df_t1[(df_t1["condition"] == "clean") & (df_t1["class"] == c)].iloc[0]
-            clean_f1 = float(clean_row["f1"])
-            clean_prec = float(df_tidy[(df_tidy["experiment"] == "clean_baseline") & (df_tidy["class"] == c) & (df_tidy["metric"] == "precision")]["value"].mean())
-            clean_rec = float(df_tidy[(df_tidy["experiment"] == "clean_baseline") & (df_tidy["class"] == c) & (df_tidy["metric"] == "recall")]["value"].mean())
-            clean_auc = float(clean_row["auc"])
+            cf = clean_fix_res[c]
+            ct = clean_tun_res[c]
             
-            f1_unmit = float(df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean())
-            prec_unmit = float(df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "precision")]["value"].mean())
-            rec_unmit = float(df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "recall")]["value"].mean())
-            auc_unmit = float(df_tidy[(df_tidy["experiment"] == "deployment_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "auc")]["value"].mean())
+            sub_unmit = df_oof[(df_oof["condition"] == cond) & (df_oof["threshold_policy"] == "fixed_0.5") & (df_oof["class"] == c)]
+            sub_cln = df_oof[(df_oof["condition"] == cond) & (df_oof["threshold_policy"] == "clean_val_tuned") & (df_oof["class"] == c)]
+            sub_deg = df_oof[(df_oof["condition"] == cond) & (df_oof["threshold_policy"] == "deg_val_tuned") & (df_oof["class"] == c)]
+            sub_mat_fix = df_oof[(df_oof["condition"] == cond) & (df_oof["threshold_policy"] == "matched_fixed_0.5") & (df_oof["class"] == c)]
+            sub_mat_tun = df_oof[(df_oof["condition"] == cond) & (df_oof["threshold_policy"] == "matched_val_tuned") & (df_oof["class"] == c)]
             
-            f1_cln_val = float(df_tidy[(df_tidy["experiment"] == "deployment_clean_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean())
-            prec_cln_val = float(df_tidy[(df_tidy["experiment"] == "deployment_clean_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "precision")]["value"].mean())
-            rec_cln_val = float(df_tidy[(df_tidy["experiment"] == "deployment_clean_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "recall")]["value"].mean())
+            def _sub_m(s):
+                if len(s) == 0:
+                    return {"f1": np.nan, "prec": np.nan, "rec": np.nan, "auc": np.nan}
+                yt, yp, ypb = s["y_true"].values, s["y_pred"].values, s["y_prob"].values
+                return {
+                    "f1": float(f1_score(yt, yp, zero_division=0)),
+                    "prec": float(precision_score(yt, yp, zero_division=0)),
+                    "rec": float(recall_score(yt, yp, zero_division=0)),
+                    "auc": float(roc_auc_score(yt, ypb)) if len(np.unique(yt)) > 1 else np.nan
+                }
             
-            f1_deg_val = float(df_tidy[(df_tidy["experiment"] == "deployment_deg_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean())
-            prec_deg_val = float(df_tidy[(df_tidy["experiment"] == "deployment_deg_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "precision")]["value"].mean())
-            rec_deg_val = float(df_tidy[(df_tidy["experiment"] == "deployment_deg_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "recall")]["value"].mean())
+            m_unmit = _sub_m(sub_unmit)
+            m_cln = _sub_m(sub_cln)
+            m_deg = _sub_m(sub_deg)
+            m_mat_fix = _sub_m(sub_mat_fix)
+            m_mat_tun = _sub_m(sub_mat_tun)
             
-            f1_matched_fix = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean())
-            prec_matched_fix = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "precision")]["value"].mean())
-            rec_matched_fix = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "recall")]["value"].mean())
-            auc_matched = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_fixed") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "auc")]["value"].mean())
-            
-            f1_matched_val = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean())
-            prec_matched_val = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "precision")]["value"].mean())
-            rec_matched_val = float(df_tidy[(df_tidy["experiment"] == "matched_retraining_val") & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "recall")]["value"].mean())
-            
-            unmit_drop = clean_f1 - f1_unmit
-            matched_drop = clean_f1 - f1_matched_val
-            recovery_pct = float(np.clip((f1_matched_val - f1_unmit) / max(unmit_drop, 1e-6) * 100.0, 0.0, 100.0))
+            unmit_drop = cf["f1"] - m_unmit["f1"]
+            matched_drop = cf["f1"] - m_mat_tun["f1"]
+            recovery_pct = float(np.clip((m_mat_tun["f1"] - m_unmit["f1"]) / max(unmit_drop, 1e-6) * 100.0, 0.0, 100.0))
+            recovery_pct_deg = float(np.clip((m_deg["f1"] - m_unmit["f1"]) / max(unmit_drop, 1e-6) * 100.0, 0.0, 100.0))
             
             table3_rows.append({
                 "condition": cond, "class": c,
-                "clean_f1": clean_f1, "clean_prec": clean_prec, "clean_rec": clean_rec, "clean_auc": clean_auc,
-                "unmitigated_f1": f1_unmit, "unmitigated_prec": prec_unmit, "unmitigated_rec": rec_unmit, "unmitigated_auc": auc_unmit,
-                "clean_val_tuned_f1": f1_cln_val, "clean_val_prec": prec_cln_val, "clean_val_rec": rec_cln_val,
-                "deg_val_tuned_f1": f1_deg_val, "deg_val_prec": prec_deg_val, "deg_val_rec": rec_deg_val,
-                "matched_retraining_fixed_f1": f1_matched_fix, "matched_fixed_prec": prec_matched_fix, "matched_fixed_rec": rec_matched_fix,
-                "matched_retraining_val_f1": f1_matched_val, "matched_val_prec": prec_matched_val, "matched_val_rec": rec_matched_val, "matched_auc": auc_matched,
-                # Legacy column names for backward compatibility
-                "matched_retraining_f1": f1_matched_val,
+                "clean_f1": cf["f1"], "clean_prec": cf["prec"], "clean_rec": cf["rec"], "clean_auc": cf["auc"],
+                "clean_val_tuned_baseline_f1": ct["f1"], "clean_val_tuned_baseline_prec": ct["prec"], "clean_val_tuned_baseline_rec": ct["rec"],
+                "unmitigated_f1": m_unmit["f1"], "unmitigated_prec": m_unmit["prec"], "unmitigated_rec": m_unmit["rec"], "unmitigated_auc": m_unmit["auc"],
+                "clean_val_tuned_f1": m_cln["f1"], "clean_val_prec": m_cln["prec"], "clean_val_rec": m_cln["rec"],
+                "deg_val_tuned_f1": m_deg["f1"], "deg_val_prec": m_deg["prec"], "deg_val_rec": m_deg["rec"],
+                "matched_retraining_fixed_f1": m_mat_fix["f1"], "matched_fixed_prec": m_mat_fix["prec"], "matched_fixed_rec": m_mat_fix["rec"], "matched_fixed_auc": m_mat_fix["auc"],
+                "matched_retraining_val_f1": m_mat_tun["f1"], "matched_val_prec": m_mat_tun["prec"], "matched_val_rec": m_mat_tun["rec"], "matched_auc": m_mat_tun["auc"],
+                "matched_retraining_f1": m_mat_tun["f1"],
                 "recovery_pct": recovery_pct,
+                "recovery_pct_deg_val": recovery_pct_deg,
                 "residual_degradation": matched_drop
             })
             
@@ -782,6 +802,7 @@ def run_pipeline(config_path="config.yaml"):
     wall_clock["step5_experiment_B"] = time.time() - t0
     
     # ---------------------------------------------------------
+    # ---------------------------------------------------------
     # STEP 6: Experiment C — Cross-Show Generalization
     # ---------------------------------------------------------
     t0 = time.time()
@@ -792,8 +813,56 @@ def run_pipeline(config_path="config.yaml"):
     tr_cs_idx = (df_subset["cross_show_split"] == "train").values
     te_cs_idx = (df_subset["cross_show_split"] == "test").values
     
-    # Use selected layer for fold 0 or rep_layer
-    cs_layer = best_layer_by_fold[0]
+    # Select layer strictly using training shows only (leakage-free: 0 clips from held-out shows participate)
+    print("\n[Cross-Show] Selecting optimal layer strictly using training shows (df_train_cs)...")
+    episodes_cs = sorted(df_train_cs["episode_id"].unique())
+    rng_cs = np.random.RandomState(cfg["random_seed"])
+    rng_cs.shuffle(episodes_cs)
+    folds_cs = np.array_split(episodes_cs, 5)
+    df_train_cs["inner_fold"] = -1
+    for f_idx, ep_group in enumerate(folds_cs):
+        df_train_cs.loc[df_train_cs["episode_id"].isin(ep_group), "inner_fold"] = f_idx
+
+    cs_layer_scores = {}
+    for l_idx in range(13):
+        feats_tr = clean_feats[l_idx][tr_cs_idx]
+        inner_f1s = []
+        for ifold in range(5):
+            in_tr_idx = (df_train_cs["inner_fold"] != ifold).values
+            in_va_idx = (df_train_cs["inner_fold"] == ifold).values
+            X_tr_in = feats_tr[in_tr_idx]
+            y_tr_in = df_train_cs.iloc[in_tr_idx].reset_index(drop=True)
+            X_va_in = feats_tr[in_va_idx]
+            y_va_in = df_train_cs.iloc[in_va_idx].reset_index(drop=True)
+            clfs_in = train_ovr_classifiers(X_tr_in, y_tr_in, target_cols, hard_thresh=hard_thresh, seed=cfg["random_seed"])
+            eval_in = evaluate_ovr_classifiers(clfs_in, X_va_in, y_va_in, target_cols, hard_thresh=hard_thresh)
+            inner_f1s.append(np.mean([eval_in[c]["f1"] for c in target_cols]))
+        cs_layer_scores[l_idx] = float(np.mean(inner_f1s))
+        print(f"  Training-show inner CV Layer {l_idx:2d}: Macro F1 = {cs_layer_scores[l_idx]:.4f}")
+
+    cs_layer = int(max(cs_layer_scores, key=cs_layer_scores.get))
+    print(f"\n>>> Selected Cross-Show Layer (Training Shows Only): Layer {cs_layer} (Inner CV Macro F1: {cs_layer_scores[cs_layer]:.4f})")
+
+    # Record layer selection provenance
+    cs_meta = {
+        "selected_layer": cs_layer,
+        "inner_cv_macro_f1": cs_layer_scores[cs_layer],
+        "layer_scores": {str(k): v for k, v in cs_layer_scores.items()},
+        "training_shows": sorted(df_train_cs["Show"].unique().tolist()),
+        "held_out_shows": sorted(df_test_cs["Show"].unique().tolist()),
+        "n_train_clips": len(df_train_cs),
+        "n_held_out_clips": len(df_test_cs),
+        "held_out_clips_in_selection_pool": 0
+    }
+    with open(os.path.join(results_dir, "cross_show_layer_selection.json"), "w") as f:
+        json.dump(cs_meta, f, indent=2)
+        
+    if cs_layer not in all_condition_feats["full_chain"]:
+        fc_feats, _ = extract_features_for_subset(df_subset, "full_chain", corpus="sep28k_full_chain", config_path=config_path, layers=[cs_layer])
+        all_condition_feats["full_chain"][cs_layer] = fc_feats[cs_layer]
+    if cs_layer not in all_condition_feats["clean"]:
+        all_condition_feats["clean"][cs_layer] = clean_feats[cs_layer]
+        
     X_tr_cs_clean = all_condition_feats["clean"][cs_layer][tr_cs_idx]
     X_te_cs_clean = all_condition_feats["clean"][cs_layer][te_cs_idx]
     X_te_cs_fc = all_condition_feats["full_chain"][cs_layer][te_cs_idx]
@@ -811,13 +880,22 @@ def run_pipeline(config_path="config.yaml"):
         f1_c = eval_cs_clean[c]["f1"]
         f1_f = eval_cs_fc[c]["f1"]
         drop = f1_c - f1_f
-        cs_summary[c] = {"clean_f1": f1_c, "full_chain_f1": f1_f, "f1_drop": drop}
+        cs_summary[c] = {
+            "clean_f1": float(f1_c),
+            "full_chain_f1": float(f1_f),
+            "f1_drop": float(drop),
+            "clean_prec": float(eval_cs_clean[c]["precision"]),
+            "clean_rec": float(eval_cs_clean[c]["recall"]),
+            "clean_auc": float(eval_cs_clean[c]["auc"]),
+            "full_chain_prec": float(eval_cs_fc[c]["precision"]),
+            "full_chain_rec": float(eval_cs_fc[c]["recall"]),
+            "full_chain_auc": float(eval_cs_fc[c]["auc"])
+        }
         print(f"{c:15s} | {f1_c:10.4f} | {f1_f:12.4f} | {drop:10.4f}")
     print("-" * 55)
     
     with open(os.path.join(results_dir, "cross_show_results.json"), "w") as f:
         json.dump(cs_summary, f, indent=2)
-        
     wall_clock["step6_experiment_C"] = time.time() - t0
     
     # Save wall clock log

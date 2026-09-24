@@ -53,9 +53,13 @@ def run_ci_computation(config_path="config.yaml"):
     print(f"[1/4] Loading out-of-fold predictions from {oof_path}...")
     df_oof = pd.read_csv(oof_path)
     
-    # Load manifest to get episode_id for each clip_uid
-    df_subset = prepare_dataset(config_path=config_path, seed=seed)
-    uid_to_ep = dict(zip(df_subset["clip_uid"], df_subset["episode_id"]))
+    # Load published manifest directly to map clip_uid to episode_id
+    manifest_csv = os.path.join(results_dir, "dataset_manifest.csv")
+    if os.path.exists(manifest_csv):
+        df_manifest = pd.read_csv(manifest_csv)
+    else:
+        df_manifest = prepare_dataset(config_path=config_path, seed=seed)
+    uid_to_ep = dict(zip(df_manifest["clip_uid"], df_manifest["episode_id"]))
     df_oof["episode_id"] = df_oof["clip_uid"].map(uid_to_ep)
     
     # -------------------------------------------------------------
