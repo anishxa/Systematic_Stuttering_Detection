@@ -1,6 +1,6 @@
-# Audio Front-End Degradation and Stuttering Detection (ICASSP 2027)
+# Audio Preprocessing Effects on Stuttering Detection: A Class-Specific Analysis
 
-This repository contains the code, data manifest, and results for our paper: **"Impact of Simulated Telecom Audio Front-Ends on Self-Supervised Speech Representations for Automated Stuttering Detection"**.
+This repository contains the code, data manifest, and results for our study: **"Audio Preprocessing Effects on Stuttering Detection: A Class-Specific Analysis"**.
 
 - **Branch**: `revision-defensible`
 - **Dataset**: 8,000 clips across 241 podcast episodes from SEP-28k
