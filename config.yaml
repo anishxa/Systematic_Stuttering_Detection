@@ -16,7 +16,7 @@ random_seed: 42
 n_folds: 5
 n_bootstrap: 1000
 hard_thresh: 1
-cache_version: "v3"
+cache_version: "v4"
 
 stutter_classes:
   - Block
@@ -29,8 +29,10 @@ degradation_conditions:
   - clean
   - opus_16k
   - opus_8k
-  - opus_16k_dtx
+  - opus_16k_voip
   - vad_agg3
   - vad_zero
   - denoise
+  - full_chain_novad
   - full_chain
+  - random_del_30pct

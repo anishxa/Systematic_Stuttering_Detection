@@ -2,9 +2,11 @@
   "clean": 0,
   "opus_16k": 0,
   "opus_8k": 0,
-  "opus_16k_dtx": 0,
-  "vad_agg3": 32,
+  "opus_16k_voip": 0,
+  "vad_agg3": 20,
   "vad_zero": 0,
   "denoise": 0,
-  "full_chain": 33
+  "full_chain_novad": 0,
+  "full_chain": 17,
+  "random_del_30pct": 0
 }
