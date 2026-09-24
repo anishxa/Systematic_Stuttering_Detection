@@ -35,20 +35,30 @@ def _process_one_clip_helper(args):
     uid, file_path, condition, degraded_dir = args
     if condition == "clean":
         raw_audio, sr = load_audio_16k(file_path)
+        actual_retained_len = len(raw_audio)
+        completely_rejected = False
     else:
         cached_wav = os.path.join(degraded_dir, condition, f"{uid}.wav")
         if os.path.exists(cached_wav):
             raw_audio, sr = load_audio_16k(cached_wav)
         else:
             clean_audio, sr = load_audio_16k(file_path)
-            raw_audio, _ = process_degradation(clean_audio, condition, sr=sr)
+            raw_audio, _ = process_degradation(clean_audio, condition, sr=sr, clip_uid=uid)
             os.makedirs(os.path.dirname(cached_wav), exist_ok=True)
             import soundfile as sf
             sf.write(cached_wav, raw_audio, sr)
             
-    true_len = len(raw_audio)
+        # Explicit check for completely rejected clips (400ms synthetic silence token)
+        if len(raw_audio) == int(sr * 0.4) and np.all(raw_audio == 0.0) and condition in ["vad_agg3", "full_chain", "random_del_30pct", "random_del_matched"]:
+            actual_retained_len = 0
+            completely_rejected = True
+        else:
+            actual_retained_len = len(raw_audio)
+            completely_rejected = False
+            
     padded_audio, was_padded = ensure_min_duration(raw_audio, sr=16000, min_ms=400)
-    return uid, padded_audio, true_len, was_padded
+    was_padded = bool(was_padded or completely_rejected)
+    return uid, padded_audio, actual_retained_len, was_padded, completely_rejected
 
 def extract_features_for_subset(df, condition, corpus="sep28k", config_path="icassp/config.yaml", force_reextract=False, layer_indices=None):
     cfg = load_config(config_path)
@@ -71,7 +81,7 @@ def extract_features_for_subset(df, condition, corpus="sep28k", config_path="ica
     }
     
     if not force_reextract and os.path.exists(index_file) and all(os.path.exists(cached_layer_files[l]) for l in target_layers):
-        print(f"[extract] Cache hit for corpus={corpus}, condition={condition} ({cache_ver}). Checking alignment...")
+        print(f"[extract] Cache hit for corpus={corpus}, condition={condition} ({cache_ver}, layers={target_layers}). Checking alignment...")
         with open(index_file) as f:
             cached_uids = json.load(f)
             
@@ -103,15 +113,16 @@ def extract_features_for_subset(df, condition, corpus="sep28k", config_path="ica
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         results = list(tqdm(executor.map(_process_one_clip_helper, tasks), total=len(tasks), desc=f"Audio prep ({condition})"))
         
-    uid_to_res = {r[0]: (r[1], r[2], r[3]) for r in results}
+    uid_to_res = {r[0]: (r[1], r[2], r[3], r[4]) for r in results}
     audios_raw = [uid_to_res[uid][0] for uid in target_uids]
     true_lengths = [uid_to_res[uid][1] for uid in target_uids]
     was_padded_flags = [uid_to_res[uid][2] for uid in target_uids]
+    completely_rejected_flags = [uid_to_res[uid][3] for uid in target_uids]
         
     # Sort clips by length before batching to optimize batch padding
     clip_records = [
-        (idx, uid, a, tlen, wpad)
-        for idx, (uid, a, tlen, wpad) in enumerate(zip(target_uids, audios_raw, true_lengths, was_padded_flags))
+        (idx, uid, a, tlen, wpad, crej)
+        for idx, (uid, a, tlen, wpad, crej) in enumerate(zip(target_uids, audios_raw, true_lengths, was_padded_flags, completely_rejected_flags))
     ]
     sorted_records = sorted(clip_records, key=lambda x: len(x[2]))
     
@@ -133,8 +144,9 @@ def extract_features_for_subset(df, condition, corpus="sep28k", config_path="ica
         
         for b, a in enumerate(batch_audios):
             padded[b, :len(a)] = a
-            eff_len = max(min(len(a), 6400), batch_true_lens[b])
-            attn[b, :min(eff_len, len(a))] = 1
+            # Encoder receptive field constraint: attend to real speech or fallback to 400ms synthetic silence token
+            eff_len = min(len(a), max(batch_true_lens[b], 6400))
+            attn[b, :eff_len] = 1
             
         inputs = torch.tensor(padded, device=device)
         attn_t = torch.tensor(attn, device=device)
@@ -150,8 +162,13 @@ def extract_features_for_subset(df, condition, corpus="sep28k", config_path="ica
                 T = hs.shape[1]
                 fmask = torch.zeros(hs.shape[0], T, device=hs.device)
                 for b, fl in enumerate(feat_lens):
-                    valid_frames = min(max(int(fl), 1), T)
-                    fmask[b, :valid_frames] = 1.0
+                    if batch_true_lens[b] > 0:
+                        valid_frames = min(max(int(fl), 1), T)
+                        fmask[b, :valid_frames] = 1.0
+                    else:
+                        # Documented fallback for completely rejected clip:
+                        # Pool over the 400ms synthetic silence token representation
+                        fmask[b, :T] = 1.0
                     
                 pooled = (hs * fmask.unsqueeze(-1)).sum(dim=1) / fmask.sum(dim=1).clamp(min=1).unsqueeze(-1)
                 layer_feats_batch[l_idx].append(pooled.cpu().numpy())
@@ -171,10 +188,18 @@ def extract_features_for_subset(df, condition, corpus="sep28k", config_path="ica
     with open(index_file, "w") as f:
         json.dump(target_uids, f)
         
-    # Save padding metadata for sensitivity analysis
+    # Save padding & rejection metadata for sensitivity analysis
     pad_meta_file = os.path.join(cache_dir, f"{corpus}_{condition}_{cache_ver}_padding_meta.json")
     with open(pad_meta_file, "w") as f:
-        json.dump({uid: bool(flag) for uid, flag in zip(target_uids, was_padded_flags)}, f)
+        meta_records = {
+            uid: {
+                "was_padded": bool(wpad),
+                "is_completely_rejected": bool(crej),
+                "actual_retained_samples": int(tlen)
+            }
+            for uid, wpad, crej, tlen in zip(target_uids, was_padded_flags, completely_rejected_flags, true_lengths)
+        }
+        json.dump(meta_records, f, indent=2)
         
     print(f"[extract] Successfully cached features for condition={condition} to {cache_dir}")
     return final_layer_dict, target_uids

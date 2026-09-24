@@ -8,5 +8,6 @@
   "denoise": 0,
   "full_chain_novad": 0,
   "full_chain": 17,
+  "random_del_matched": 20,
   "random_del_30pct": 0
 }

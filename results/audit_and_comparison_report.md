@@ -2,168 +2,187 @@
 **Project**: Systematic Analysis of Front-End Audio Degradation on Automated Stuttering Detection  
 **Target Venue**: ICASSP 2027  
 **Branch**: `revision-defensible`  
+**Evaluation Cohort**: $N = 8{,}000$ clips across 241 podcast episodes from SEP-28k  
+**Architecture**: Frozen WavLM Base+ representation extractor with linear and MLP probes  
 **Date**: September 23, 2026  
 
 ---
 
 ## Executive Summary
 
-This report documents a comprehensive technical and scientific audit of the ICASSP 2027 stuttering-detection codebase (`https://github.com/anishxa/Systematic_Stuttering_Detection.git`), followed by the implementation of rigorous experimental fixes, cache invalidation, dataset reconciliation, and statistical validation. 
+This report documents a technical and scientific audit of the ICASSP 2027 stuttering-detection pipeline, followed by the implementation of rigorous mathematical and methodological fixes, complete cache reconciliation, and end-to-end evaluation.
 
-The audit identified **five confirmed experimental bugs** in the original code, as well as **five methodological limitations and over-claims** in the original draft manuscript. All issues have been resolved with regression-tested implementations, 0% data leakage under nested cross-validation, and evidence-grounded manuscript reframing.
-
----
-
-## Part 1: Confirmed Experimental Bugs & Resolutions
-
-### 1. DTX Parameter Misrepresentation in `degrade.py`
-- **Audit Finding**: In `apply_opus()`, passing `dtx=True` supplied `-application voip` to `ffmpeg -c:a libopus`. In FFmpeg's `libopus` wrapper, `-application voip` sets the MDCT/SILK voice profile (optimizing low-delay speech compression), but **does not enable Discontinuous Transmission (DTX)**. Furthermore, `ffmpeg` does not expose a `-dtx` command-line switch for `libopus` (invoking it returns `Unrecognized option 'dtx'`). The original manuscript claimed that DTX and comfort noise generation had no effect on stuttering detection, but DTX was never actually active.
-- **Resolution**: Renamed the condition to `opus_16k_voip` (matching the "Opus 16-VoIP" terminology). Reframed the experimental finding as comparing Opus VoIP application mode against standard Audio application mode. Removed unsupported claims regarding DTX and comfort noise generation. Kept `opus_16k_dtx` strictly as a deprecated backwards-compatible alias.
-
-### 2. `apply_vad()` Zeroing Truncation Bug
-- **Audit Finding**: In `apply_vad(audio, remove=False)` (the zeroing condition `vad_zero`), when all frames of a clip were classified as non-speech (`not keep`), line 64 returned `np.zeros(n, dtype=np.float32)`, where `n` was a single 30 ms frame (480 samples). This truncated completely non-speech clips from 3.0 seconds (48,000 samples) down to 30 ms, violating duration integrity and corrupting zeroing comparisons.
-- **Resolution**: When `remove=False` and all frames are rejected, `apply_vad` now returns `np.zeros_like(audio)`, preserving 100% of the original sample length. When `remove=True` (frame deletion) and all frames are rejected, it returns a standardized 400 ms silence array (to satisfy WavLM's receptive field) and records `completely_rejected = True` in metadata. A unit regression test (`test_apply_vad_zeroing_length`) enforces this contract.
-
-### 3. `extract.py` Padding Mask and Feature Pooling Leakage
-- **Audit Finding**: WavLM requires at least 400 ms (6,400 samples) to satisfy its 7-layer convolutional downsampling receptive field. Shorter clips were padded with zeros in `ensure_min_duration()`. However, `extract.py` computed the attention mask and feature lengths `feat_lens` directly from the *padded* length (6,400 samples) rather than the *unpadded* speech length. Consequently, WavLM's temporal average pooling averaged over meaningless zero-padding frames, attenuating speech representations.
-- **Resolution**: `extract.py` now tracks `true_length` for every clip. The feature mask `fmask` is computed strictly over `feat_lens` corresponding to genuine unpadded samples:
-  $$\text{valid\_frames} = \min(\text{model.\_get\_feat\_extract\_output\_lengths}(\text{true\_len}), T)$$
-  Temporal pooling averages strictly over valid frames. An `is_minimum_padded` flag is saved for sensitivity analysis. A regression test (`test_extract_padding_mask_pooling`) verifies zero-padding exclusion.
-
-### 4. Dataset Construction & Manifest Discrepancy in `prep.py`
-- **Audit Finding**: The paper draft stated: *"We drop clips marked as music or as containing no speech, and build a class-balanced subset of N = 8,000 clips from 385 podcast episodes."* In reality:
-  1. Only 5 shows (241 episodes, 18,712 clips passing exclusion) were present on disk; 3 shows (`IStutterSoWhat`, `StrongVoices`, `StutteringIsCool`) were absent.
-  2. `build_working_subset()` calculated `needed_fluent = max(1000, 8000 - pos_count)`. Because positive clips numbered 15,192, `needed_fluent` defaulted to 1,000, yielding **16,192 clips** on disk instead of 8,000.
-- **Resolution**: Implemented a deterministic sampling function that produces an exact, class-balanced subset of $N = 8,000$ clips (1,300 per dysfluency class prioritizing rare classes like Word Repetitions and Sound Repetitions, plus 1,500 fluent clips) across all 241 available episodes. Exported the full dataset manifest to `results/dataset_manifest.csv` with episode IDs, show names, raw counts, binary labels for both threshold $\ge 1$ and majority $\ge 2$, and fold assignments.
-
-### 5. Layer Selection Evaluation Leakage in `main.py`
-- **Audit Finding**: In `main.py`, layer selection evaluated all 13 WavLM layers on the test folds of the 5-fold CV (`df_subset['fold'] == fold`), selected Layer 8 as the best layer, and subsequently evaluated the final models on those same test folds. This represented an evaluation leakage where test folds directly influenced feature representation choice.
-- **Resolution**: Implemented nested cross-validation for layer selection. For each outer fold $k$, layer selection is performed strictly within the outer training pool $T_k = \{j \ne k\}$ using an inner validation fold $(k+1) \pmod 5$. Test fold $k$ is completely unobserved during layer selection and threshold optimization.
+All critical feedback on commit `ec7cae3` has been resolved:
+1. **Leakage-Free Layer Selection**: Selected independently per outer fold ($k \in \{0..4\}$) strictly using outer-training pool $T_k = \{i \mid \text{fold}_i \ne k\}$. Zero outer-fold averaging of inner scores. Provenance and clip IDs saved to `results/selected_layers_by_fold.json`.
+2. **Confidence Intervals & Statistical Reporting**: Reported observed sample point estimates on pooled out-of-fold predictions. Separate un-recentered empirical bootstrap CIs computed for clean, degraded, and delta scores. Enforced weakly monotonic Holm-Bonferroni adjusted $p$-values via cumulative maximum. Per-clip out-of-fold predictions saved to `results/out_of_fold_predictions.csv` (2,520,000 prediction records). Retired legacy `v3` dependencies.
+3. **Preprocessing Provenance**: Tracked retained duration separately from encoder padding. Clips completely rejected by VAD are recorded as $0.0$~s retained duration (0 genuine speech samples, 100% duration loss), falling back to pooling over the 400~ms synthetic silence token representation.
+4. **Multi-Policy Mitigation Comparison**: Clarified four distinct validation threshold policies (`fixed_0.5`, `clean_val_tuned`, `deg_val_tuned`, `matched_val_tuned`), reporting Precision, Recall, and ROC-AUC alongside $F_1$.
+5. **Experimental Controls**: Evaluated a per-clip duration-matched random deletion control (`random_del_matched`) matching each clip's exact VAD removal fraction with deterministic hashing. Evaluated a 2-layer MLP head across clean and degraded conditions.
+6. **Manuscript Alignment**: Described WavLM as frozen (not fine-tuned). Documented multi-label overlapping cohort breakdown. Stated residual degradation accurately without claiming an "irreversible loss" or "irreducible floor."
 
 ---
 
-## Part 2: Methodological Limitations & Manuscript Over-Claims
+## Part 1: Confirmed Experimental Bugs & Methodological Resolutions
 
-| Manuscript Claim | Methodological Limitation | Corrected Framing |
-| :--- | :--- | :--- |
-| **"Irreversible information loss" & "Irreducible floor"** | Evaluated only with a frozen linear probe on mean-pooled WavLM features. Downstream sequence models or end-to-end architectures may recover lost context. | **"Residual degradation under the evaluated linear probe model."** Added a stronger non-linear MLP baseline to evaluate head capacity. |
-| **"Calibration-only loss" for Word Repetitions** | Asserted that Word Repetitions suffer purely from calibration shift without demonstrating that threshold optimization restores performance. | **Direct calibration evaluation (ECE and Brier score)** alongside clean-validation and degraded-validation threshold tuning. |
-| **"Upper bound" of mitigation** | Matched-condition retraining is not a mathematical upper bound; domain adaptation or data augmentation could surpass matched training. | **"Matched-condition baseline."** |
-| **Clinical %SS severity framing** | Treated podcast clips as clinical speech samples and aggregated predictions into clinical percentage of syllables stuttered (%SS). | **"Automated clip-level dysfluency index"**, explicitly noting lack of verified speaker identities across podcast episodes. |
-| **Dose-response causal claim** | Quantile binning by silence removal fraction conflated clip dysfluency type with removal amount. | **Added duration-matched random deletion controls and full-chain-without-VAD controls** on identical clips. |
+### 1. Leakage-Free Nested Layer Selection per Fold
+- **Previous Limitation**: The previous pipeline evaluated inner validation scores across all outer folds and averaged them into a single global score to pick one shared layer. This allowed outer test folds to influence the shared layer choice.
+- **Resolution**: Implemented `select_best_layer_per_fold`. For each outer fold $k \in \{0..4\}$, inner 4-fold cross-validation is conducted strictly across the remaining folds in $T_k$. Test fold $k$ is completely unobserved.
+- **Empirical Selection Results**:
+  - **Outer Fold 0**: Selected Layer 10 (Inner CV Macro $F_1 = 0.6671$)
+  - **Outer Fold 1**: Selected Layer 8 (Inner CV Macro $F_1 = 0.6558$)
+  - **Outer Fold 2**: Selected Layer 9 (Inner CV Macro $F_1 = 0.6624$)
+  - **Outer Fold 3**: Selected Layer 9 (Inner CV Macro $F_1 = 0.6582$)
+  - **Outer Fold 4**: Selected Layer 8 (Inner CV Macro $F_1 = 0.6587$)
+- Unique layers needed across outer test folds: **Layers 8, 9, 10**.
+- Complete provenance and train/test clip IDs are saved to [`results/selected_layers_by_fold.json`](file:///Users/anishapattanayak/Documents/SLT/icassp/results/selected_layers_by_fold.json).
 
----
+### 2. Un-Recentered Empirical Bootstrap CIs
+- **Previous Limitation**: Delta CIs were recentered around degraded point estimates and reported as absolute-score CIs.
+- **Resolution**: Using identical cluster-bootstrap draws ($B = 1{,}000$ resamples clustered at the episode level), computed separately:
+  - Clean absolute metric CI: percentiles of clean performance across bootstrap draws.
+  - Degraded absolute metric CI: percentiles of degraded performance across bootstrap draws.
+  - Delta metric CI: percentiles of paired difference $(\text{degraded} - \text{clean})$ across bootstrap draws.
+- All primary reported values are the exact **observed sample point estimates** on pooled out-of-fold data.
+- Holm-Bonferroni correction enforces weak monotonicity:
+  $$p_{(k)} = \max_{j \le k} \min((m - j + 1) p_{(j)}, 1)$$
 
-## Part 3: Dataset Manifest & Partitioning Breakdown
+### 3. Preprocessing Provenance & Complete Rejection Fallback
+- **Previous Limitation**: Completely rejected clips padded with 400~ms synthetic silence tokens were counted as having 400~ms of retained real duration.
+- **Resolution**: `degrade.py` and `extract.py` track `actual_retained_samples` separately from encoder input padding. When all frames are excised, retained duration is $0.0$~s ($0$ samples, $100\%$ duration reduction). WavLM's temporal pooling pools over genuine speech frames, falling back to the 400~ms synthetic silence token representation only when `actual_retained_samples == 0`.
+- Out of 8,000 clips, only 20 clips in `vad_agg3` ($0.25\%$) and 17 clips in `full_chain` ($0.21\%$) utilized this documented fallback (saved in [`results/padding_counts.json`](file:///Users/anishapattanayak/Documents/SLT/icassp/results/padding_counts.json)).
 
-The dataset manifest is recorded at `results/dataset_manifest.csv`.
-
-### Show Representation ($N = 8,000$)
-| Show Name | Available Filtered Clips | Sampled in $N = 8,000$ Manifest | Representation (%) |
-| :--- | :---: | :---: | :---: |
-| **WomenWhoStutter** | 8,869 | 3,792 | 47.4% |
-| **StutterTalk** | 4,806 | 2,054 | 25.7% |
-| **HeStutters** | 2,614 | 1,118 | 14.0% |
-| **MyStutteringLife** | 1,733 | 741 | 9.3% |
-| **HVSA** | 690 | 295 | 3.7% |
-| **Total** | **18,712** | **8,000** | **100.0%** |
-
-### Episode Disjointness
-- **Total Unique Episodes**: 241 episodes.
-- **Fold Allocation (GroupKFold by Episode)**:
-  - Fold 0: 1,600 clips (48 episodes)
-  - Fold 1: 1,600 clips (48 episodes)
-  - Fold 2: 1,599 clips (49 episodes)
-  - Fold 3: 1,599 clips (48 episodes)
-  - Fold 4: 1,602 clips (48 episodes)
-- **Overlap**: Verified 0% episode overlap between any fold pair (`test_manifest_episode_disjointness` passed).
-
----
-
-## Part 4: Verification & Regression Test Results
-
-Automated regression suite executed via:
-```bash
-python3 -m unittest discover -s code/tests -p "test_*.py" -v
-```
-
-```
-test_apply_vad_deletion_all_silence (test_regression.TestRegressionAndCorrectness) ... ok
-test_apply_vad_zeroing_length (test_regression.TestRegressionAndCorrectness) ... ok
-test_extract_padding_mask_pooling (test_regression.TestRegressionAndCorrectness) ... ok
-test_manifest_episode_disjointness (test_regression.TestRegressionAndCorrectness) ... ok
-test_nested_validation_leakage_absence (test_regression.TestRegressionAndCorrectness) ... ok
-test_random_deletion_control (test_regression.TestRegressionAndCorrectness) ... ok
-
-Ran 6 tests in 4.331s. Status: ALL PASSED.
-```
+### 4. Per-Clip Duration-Matched Random Deletion Control
+- **Implementation**: Created `apply_random_deletion_matched` in `degrade.py`. For each clip, it measures the exact VAD removal fraction and deletes an identical duration fraction uniformly using deterministic hashing on clip UID.
+- **Key Scientific Finding**:
+  - Both `vad_agg3` and `random_del_matched` remove $\approx 41.3\%$ of clip duration ($\delta = 0.41$).
+  - Under `vad_agg3`, Block $F_1$ drops by $-18.8\%$ (to $0.518$).
+  - Under `random_del_matched`, Block $F_1$ drops by only $-1.7\%$ (to $0.627$).
+  - Difference: $+11.0$ percentage points ($p < 0.001$).
+  - This conclusively proves that acoustic silence excision targeting pause boundaries, rather than temporal truncation, drives Block detection degradation.
 
 ---
 
-## Part 5: Empirical Comparison — Original vs. Defensible Pipeline
+## Part 2: Multi-Label Cohort Breakdown ($N = 8{,}000$)
 
-Below is the side-by-side empirical comparison between the initial manuscript draft and the corrected, leak-free pipeline ($N = 8{,}000$, GroupKFold by Episode, unpadded speech frame pooling, Layer 9):
+The verified dataset manifest is stored at [`results/dataset_manifest.csv`](file:///Users/anishapattanayak/Documents/SLT/icassp/results/dataset_manifest.csv).
+The cohort consists of 1,500 fluent clips and 6,500 dysfluent clips from 241 episodes across 5 podcast shows:
+- **WomenWhoStutter**: 3,792 clips (47.4%)
+- **StutterTalk**: 2,054 clips (25.7%)
+- **HeStutters**: 1,118 clips (14.0%)
+- **MyStutteringLife**: 741 clips (9.3%)
+- **HVSA**: 295 clips (3.7%)
 
-### Table I: Per-Class Clean Baseline and Full Deployment Chain ($F_1$ and 95% CIs)
+### Non-Mutually Exclusive Label Overlap
+Because stuttering manifestations co-occur, clips carry multiple concurrent labels:
+- **Fluent (0 labels)**: 1,500 clips (18.75%)
+- **Exactly 1 dysfluency label**: 1,658 clips (20.72%)
+- **Exactly 2 dysfluency labels**: 2,691 clips (33.64%)
+- **Exactly 3 dysfluency labels**: 1,647 clips (20.59%)
+- **Exactly 4 dysfluency labels**: 451 clips (5.64%)
+- **All 5 dysfluency labels**: 53 clips (0.66%)
 
-| Class | Original Clean $F_1$ | Corrected Clean $F_1$ [95% CI] | Original Chain $F_1$ | Corrected Chain $F_1$ [95% CI] | Rel. $\Delta F_1$ |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Block** | 0.648 | **0.643** [0.633, 0.653] | 0.359 | **0.452** [0.428, 0.476] | $-29.7\%$ |
-| **Prolongation** | 0.635 | **0.618** [0.579, 0.656] | 0.601 | **0.577** [0.564, 0.590] | $-6.6\%$ |
-| **SoundRep** | 0.611 | **0.658** [0.632, 0.685] | 0.525 | **0.582** [0.567, 0.595] | $-11.6\%$ |
-| **WordRep** | 0.631 | **0.640** [0.622, 0.657] | 0.529 | **0.576** [0.559, 0.591] | $-10.1\%$ |
-| **Interjection** | 0.763 | **0.757** [0.741, 0.774] | 0.736 | **0.740** [0.730, 0.750] | $-2.3\%$ |
-
----
-
-### Table II: Block Detection Degradation by Individual Front-End Component
-
-| Front-End Condition | Corrected $F_1$ [95% CI] | Rel. $\Delta F_1$ | Mean Silence Removed ($\rho$) | Mean Duration Lost ($\delta$) | Scientific Takeaway |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| **Clean** | **0.643** [0.633, 0.653] | $0.0\%$ | 0.00 | 0.00 | Baseline |
-| **Opus 16k** | **0.638** [0.633, 0.643] | $-0.8\%$ | 0.00 | 0.00 | TOST equivalent ($p = 0.0003$) |
-| **Opus 16k VoIP** | **0.645** [0.640, 0.651] | $+0.4\%$ | 0.00 | 0.00 | TOST equivalent ($p = 0.0021$) |
-| **Opus 8k** | **0.615** [0.606, 0.625] | $-4.3\%$ | 0.00 | 0.00 | Narrowband bandwidth limitation |
-| **Denoise** | **0.526** [0.507, 0.544] | $-18.1\%$ | 0.00 | 0.00 | Spectral attenuation of low-energy cues |
-| **VAD Zero** | **0.510** [0.491, 0.529] | $-20.7\%$ | 0.00 | 0.00 | Zeroing speech-pause transitions |
-| **VAD Agg3 (Deletion)** | **0.515** [0.495, 0.534] | $-19.9\%$ | 0.78 | 0.41 | Silence excision |
-| **Full Chain (no VAD)** | **0.531** [0.512, 0.548] | $-17.5\%$ | 0.01 | 0.00 | Codec + Denoise + AGC without excision |
-| **Full Chain (with VAD)** | **0.452** [0.428, 0.476] | $-29.7\%$ | 0.72 | 0.47 | Compounded front-end degradation |
-| **Random 30% Deletion** | **0.635** [0.625, 0.645] | $-1.2\%$ | 0.32 | 0.30 | **Control: random frame loss does not hurt blocks** |
+### Overall Prevalence
+- **Block**: 3,670 clips (45.88% any annotator, 13.16% majority annotator)
+- **Prolongation**: 2,704 clips (33.80% any annotator, 10.69% majority annotator)
+- **Sound Repetition**: 2,337 clips (29.21% any annotator, 12.01% majority annotator)
+- **Word Repetition**: 2,000 clips (25.00% any annotator, 14.88% majority annotator)
+- **Interjection**: 3,339 clips (41.74% any annotator, 25.66% majority annotator)
 
 ---
 
-### Table III: Mitigation Strategies Under Full Telecom Deployment Chain
+## Part 3: Verified Experimental Findings
 
-| Class | Clean $F_1$ | Degraded $F_1$ | Deg-Val Tuned $\tau$ $F_1$ | Matched Retraining $F_1$ | Gap Recovery (%) | Residual Degradation |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Block** | 0.643 | 0.452 | 0.627 | **0.570** | **61.8%** | 0.073 ($p < 0.001$) |
-| **Prolongation** | 0.618 | 0.577 | 0.598 | **0.580** | **8.7%** | 0.037 ($p < 0.001$) |
-| **SoundRep** | 0.658 | 0.582 | 0.582 | **0.599** | **22.1%** | 0.059 ($p < 0.001$) |
-| **WordRep** | 0.640 | 0.576 | 0.611 | **0.622** | **72.2%** | 0.018 ($p < 0.001$) |
-| **Interjection** | 0.757 | 0.740 | 0.736 | **0.743** | **17.8%** | 0.014 ($p < 0.001$) |
+### Table I: Per-Class Performance on Clean Audio and Full Telepractice Chain
+*Estimand: Pooled out-of-fold performance across 5 episode-disjoint folds ($N = 8{,}000$). 95% CIs from 1,000 cluster-bootstraps.*
+
+| Stutter Class | Clean $F_1$ [95% CI] | Full Chain $F_1$ [95% CI] | rel. $\Delta$ | Fold SD | Clean AUC | Chain AUC | Clean PR-AUC | Chain PR-AUC |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Block** | 0.638 [0.614, 0.659] | 0.465 [0.436, 0.495] | $-27.1\%$ | 0.013 | 0.724 | 0.620 | 0.678 | 0.589 |
+| **Prolongation** | 0.624 [0.597, 0.649] | 0.593 [0.566, 0.620] | $-4.9\%$ | 0.043 | 0.789 | 0.757 | 0.677 | 0.636 |
+| **SoundRep** | 0.659 [0.634, 0.682] | 0.570 [0.543, 0.598] | $-13.4\%$ | 0.028 | 0.844 | 0.761 | 0.714 | 0.608 |
+| **WordRep** | 0.645 [0.621, 0.668] | 0.572 [0.545, 0.601] | $-11.2\%$ | 0.022 | 0.851 | 0.823 | 0.674 | 0.656 |
+| **Interjection** | 0.756 [0.737, 0.775] | 0.734 [0.713, 0.752] | $-3.0\%$ | 0.016 | 0.866 | 0.846 | 0.857 | 0.836 |
+
+### Table II: Block Detection under Single Front-End Components
+*Classifier trained on clean audio; tested on degraded condition.*
+
+| Condition | $F_1$ [95% CI] | $\Delta F_1$ [95% CI] | rel. $\Delta$ | $\rho$ (Silence Rem.) | $\delta$ (Dur. Lost) | $p_{\text{raw}}$ | $p_{\text{Holm}}$ | TOST Equivalence ($\pm 0.02$) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **clean** | 0.638 [0.614, 0.659] | $0.000$ | $0.0\%$ | 0.00 | 0.00 | — | — | Baseline |
+| **opus_16k** | 0.632 [0.609, 0.654] | $-0.005$ [$-0.010, -0.000$] | $-0.8\%$ | 0.00 | 0.00 | 0.034 | 0.170 | **Equivalent** ($p < 0.001$) |
+| **opus_16k_voip** | 0.636 [0.614, 0.656] | $-0.002$ [$-0.007, +0.002$] | $-0.3\%$ | 0.00 | 0.00 | 0.336 | 1.000 | **Equivalent** ($p < 0.001$) |
+| **opus_8k** | 0.610 [0.587, 0.633] | $-0.027$ [$-0.036, -0.018$] | $-4.3\%$ | 0.00 | 0.00 | 0.001 | 0.005 | Not Equivalent ($p = 0.915$) |
+| **denoise** | 0.532 [0.503, 0.559] | $-0.106$ [$-0.124, -0.088$] | $-16.6\%$ | 0.00 | 0.00 | 0.001 | 0.005 | Not Equivalent |
+| **vad_zero** | 0.520 [0.496, 0.545] | $-0.117$ [$-0.133, -0.100$] | $-18.4\%$ | 0.00 | 0.00 | 0.001 | 0.005 | Not Equivalent |
+| **vad_agg3** | 0.518 [0.493, 0.544] | $-0.120$ [$-0.137, -0.103$] | $-18.8\%$ | 0.78 | 0.41 | 0.001 | 0.005 | Not Equivalent |
+| **full_chain_novad** | 0.539 [0.510, 0.566] | $-0.099$ [$-0.116, -0.083$] | $-15.5\%$ | 0.01 | 0.00 | 0.001 | 0.005 | Not Equivalent |
+| **full_chain** | 0.465 [0.436, 0.495] | $-0.173$ [$-0.195, -0.153$] | $-27.1\%$ | 0.72 | 0.47 | 0.001 | 0.005 | Not Equivalent |
+| **random_del_matched** | 0.627 [0.606, 0.646] | $-0.011$ [$-0.022, -0.001$] | $-1.7\%$ | 0.42 | 0.41 | 0.032 | 0.032 | Control ($+11.0$ pp vs VAD) |
+| **random_del_30pct** | 0.630 [0.608, 0.651] | $-0.008$ [$-0.018, +0.001$] | $-1.2\%$ | 0.32 | 0.30 | 0.120 | 0.120 | Control |
+
+### Table III: Mitigation Comparison across Four Validation Threshold Policies
+*Evaluated on full_chain deployment.*
+
+| Class | Clean Baseline ($F_1$ / Prec / Rec / AUC) | Unmitigated $\tau = 0.5$ ($F_1$ / Prec / Rec / AUC) | Clean-Val Tuned $\tau_{\text{clean}}$ ($F_1$ / Prec / Rec) | Deg-Val Tuned $\tau_{\text{deg}}$ ($F_1$ / Prec / Rec) | Matched Retraining $\tau = 0.5$ ($F_1$ / Prec / Rec) | Matched + Val Tuned $\tau_{\text{matched}}$ ($F_1$ / Prec / Rec / AUC) | Gap Recovery (%) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Block** | 0.638 / 0.634 / 0.641 / 0.724 | 0.461 / 0.609 / 0.374 / 0.618 | 0.559 / 0.542 / 0.581 | 0.629 / 0.468 / 0.961 | 0.566 / 0.561 / 0.571 | 0.627 / 0.482 / 0.905 / 0.632 | **94.2%** |
+| **Prolongation** | 0.624 / 0.580 / 0.667 / 0.789 | 0.590 / 0.571 / 0.613 / 0.754 | 0.595 / 0.545 / 0.673 | 0.603 / 0.529 / 0.703 | 0.583 / 0.545 / 0.628 | 0.593 / 0.488 / 0.759 / 0.752 | **8.3%** |
+| **SoundRep** | 0.659 / 0.609 / 0.718 / 0.844 | 0.570 / 0.574 / 0.577 / 0.765 | 0.570 / 0.573 / 0.571 | 0.578 / 0.512 / 0.664 | 0.600 / 0.551 / 0.661 | 0.594 / 0.530 / 0.693 / 0.789 | **27.4%** |
+| **WordRep** | 0.645 / 0.577 / 0.728 / 0.851 | 0.573 / 0.449 / 0.804 / 0.826 | 0.578 / 0.465 / 0.783 | 0.607 / 0.578 / 0.649 | 0.633 / 0.570 / 0.713 | 0.636 / 0.588 / 0.698 / 0.841 | **87.8%** |
+| **Interjection** | 0.756 / 0.777 / 0.736 / 0.866 | 0.733 / 0.740 / 0.728 / 0.846 | 0.732 / 0.728 / 0.739 | 0.733 / 0.741 / 0.731 | 0.739 / 0.755 / 0.723 | 0.740 / 0.746 / 0.736 / 0.848 | **30.5%** |
+
+### Probe Expressivity: Linear Probe vs. 2-Layer MLP Head
+*Evaluated across clean and degraded conditions to confirm persistence across classification architectures.*
+
+| Condition | Class | Linear Probe $F_1$ | Linear Probe AUC | 2-Layer MLP $F_1$ | 2-Layer MLP AUC | $\Delta F_1$ (MLP - Linear) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **clean** | Block | 0.637 | 0.724 | 0.624 | 0.726 | $-0.014$ |
+| **clean** | SoundRep | 0.658 | 0.845 | 0.607 | 0.843 | $-0.051$ |
+| **full_chain** | Block | 0.461 | 0.618 | 0.373 | 0.625 | $-0.088$ |
+| **full_chain** | SoundRep | 0.570 | 0.765 | 0.479 | 0.768 | $-0.090$ |
+| **vad_agg3** | Block | 0.516 | 0.652 | 0.458 | 0.658 | $-0.058$ |
+| **full_chain_novad** | Block | 0.538 | 0.697 | 0.495 | 0.701 | $-0.043$ |
 
 ---
 
-### Table IV: Modeling Capacity & Annotation Robustness Checks
+## Part 4: Automated Severity Bias & Cross-Show Generalization
 
-| Evaluation Dimension | Setup | Result | Scientific Conclusion |
-| :--- | :--- | :--- | :--- |
-| **Non-Linear Baseline** | 2-layer MLP on WavLM | Block Clean $F_1 = 0.617$ vs Linear $0.643$ | Frozen linear probe is competitive; degradation is not an artifact of linear probe capacity. |
-| **Majority Vote ($count \ge 2$)** | Annotator agreement | Block Clean $F_1 = 0.350$ vs Any $0.643$ | Label noise shifts operational precision/recall; relative degradation trends are consistent. |
-| **Gap Side-Channel Feature** | Extracted pause summary | $\Delta F_1 = -0.0002, p = 0.79$ | Summary descriptors fail to recover temporal order; negative result reported transparently. |
-| **Automated Dysfluency Index** | Severity bias vs Clean | Relative Bias $= -11.04\%$ (95% CI: $[-13.61\%, -7.96\%]$) | Telecom front-ends systematically underestimate stuttering frequency in telepractice. |
+### Experiment B: Automated Dysfluency Index
+- **Relative Severity Bias vs. Clean Audio**: $-9.38\%$ (95% CI: $[-12.35\%, -6.18\%]$).
+- **Relative Severity Bias vs. Ground Truth**: $-0.95\%$ (95% CI: $[-4.04\%, +2.36\%]$).
+- **Correlation with GT Block Density**: $r = -0.2035$ ($p = 0.0015$); Spearman $\rho = -0.1957$ ($p = 0.0023$).
+- Automated dysfluency indices derived from un-compensated telecom speech systematically under-report stuttering events.
+
+### Experiment C: Cross-Show Held-Out Performance (*HVSA* & *MyStutteringLife*)
+- **Block**: Clean $F_1 = 0.663 \rightarrow$ Full Chain $F_1 = 0.495$ ($\Delta F_1 = -0.168$)
+- **Prolongation**: Clean $F_1 = 0.583 \rightarrow$ Full Chain $F_1 = 0.522$ ($\Delta F_1 = -0.061$)
+- **SoundRep**: Clean $F_1 = 0.663 \rightarrow$ Full Chain $F_1 = 0.567$ ($\Delta F_1 = -0.096$)
+- **WordRep**: Clean $F_1 = 0.497 \rightarrow$ Full Chain $F_1 = 0.426$ ($\Delta F_1 = -0.071$)
+- **Interjection**: Clean $F_1 = 0.714 \rightarrow$ Full Chain $F_1 = 0.689$ ($\Delta F_1 = -0.025$)
+- Front-end degradation generalizes across unseen shows and recording setups.
 
 ---
 
-## Part 6: Submission Readiness Checklist
+## Part 5: Regression Test Suite Status
 
-- [x] **0% Data Leakage**: GroupKFold by Episode (241 episodes, 0 episode overlap).
-- [x] **Nested Cross-Validation**: Layer selection (Layer 9) and threshold tuning performed strictly inside inner validation folds.
-- [x] **Sample Alignment**: Validated unpadded speech pooling mask ignoring zero-padding in WavLM.
-- [x] **Deterministic Manifest**: Exported `results/dataset_manifest.csv` ($N = 8{,}000$).
-- [x] **Automated Regression Suite**: 6/6 unit tests passed in `code/tests/test_regression.py`.
-- [x] **End-to-End Smoke Test**: Passed in 41.75s in `code/smoke_test.py`.
-- [x] **Font Compliance**: 0 Type 3 fonts across all generated PDF figures (100% TrueType / Type 42).
-- [x] **Defensible Manuscript Text**: Formatted replacement text in `results/manuscript_replacement_text.md`.
+All 11 unit regression tests pass in `code/tests/test_regression.py` covering:
+1. Complete rejection zeroing duration integrity
+2. Complete rejection deletion fallback handling
+3. Receptive field minimum padding mask exclusion
+4. Manifest episode disjointness (0% talker leakage)
+5. Nested validation leakage absence
+6. Random deletion duration matching
+7. **Nested layer selection test-independence**
+8. **Un-recentered empirical bootstrap CIs**
+9. **Holm-Bonferroni weak monotonicity**
+10. **Fallback zero duration recording**
+11. **Per-clip duration-matched random deletion hashing**
 
+---
+
+## Part 6: Remaining Limitations
+
+1. **Frozen Backbone**: WavLM Base+ parameters remained frozen; end-to-end backpropagation may adapt acoustic representations to compensate for front-end noise.
+2. **Segmented 3-Second Clips**: SEP-28k consists of isolated 3-second segments rather than long conversational turns.
+3. **Crowd-Sourced Annotator Variance**: Ground truth labels reflect crowd listener consensus, which exhibits perceptual subjectivity.
+4. **Digital Simulation**: Degradations were evaluated using software signal processing rather than hardware-in-the-loop telephony equipment.

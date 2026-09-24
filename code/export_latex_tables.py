@@ -63,7 +63,7 @@ def generate_latex():
         clean_blk = t1[(t1["condition"] == "clean") & (t1["class"] == "Block")].iloc[0]
         f.write(f"{'clean':18s} & {clean_blk['f1']:.3f} [{clean_blk['f1_ci_low']:.3f}, {clean_blk['f1_ci_high']:.3f}] & $0.0\\%$ & 0.00 & 0.00 \\\\\n")
         
-        cond_order = ["opus_16k", "opus_16k_voip", "opus_8k", "denoise", "vad_zero", "vad_agg3", "full_chain_novad", "full_chain", "random_del_30pct"]
+        cond_order = ["opus_16k", "opus_16k_voip", "opus_8k", "denoise", "vad_zero", "vad_agg3", "full_chain_novad", "full_chain", "random_del_matched", "random_del_30pct"]
         for cond in cond_order:
             blk_row = t1[(t1["condition"] == cond) & (t1["class"] == "Block")]
             if blk_row.empty:

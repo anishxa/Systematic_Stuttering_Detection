@@ -50,7 +50,7 @@ def apply_opus(audio, sr=16000, bitrate="16k", dtx=False, application=None):
         deg_audio, _ = sf.read(out_wav)
         return deg_audio.astype(np.float32)
 
-def apply_vad(audio, sr=16000, mode=3, remove=True, hangover_frames=0):
+def apply_vad(audio, sr=16000, mode=3, remove=True, hangover_frames=0, return_meta=False):
     vad = webrtcvad.Vad(mode)
     frame_ms = 30
     n = int(sr * frame_ms / 1000)
@@ -69,53 +69,110 @@ def apply_vad(audio, sr=16000, mode=3, remove=True, hangover_frames=0):
         if is_sp:
             keep.append(audio[i * n : (i + 1) * n])
             
+    min_samples = int(sr * 0.4)
     if not keep:
         if not remove:
             # Zeroing preserves full waveform length (duration integrity)
-            return np.zeros_like(audio)
+            out_audio = np.zeros_like(audio)
+            actual_retained_samples = 0
+            completely_rejected = True
         else:
             # Completely rejected clip when removing frames:
-            # Return standardized 400ms silence so encoder receptive field is satisfied
-            min_samples = int(sr * 0.4)
-            return np.zeros(min_samples, dtype=np.float32)
-        
-    if remove:
-        return np.concatenate(keep).astype(np.float32)
+            # Return standardized 400ms silence so encoder receptive field is satisfied,
+            # but record actual_retained_samples = 0 and completely_rejected = True.
+            out_audio = np.zeros(min_samples, dtype=np.float32)
+            actual_retained_samples = 0
+            completely_rejected = True
     else:
-        out_audio = audio.copy()
-        for i, f in enumerate(flags):
-            is_sp = f or (hangover_frames > 0 and any(flags[max(0, i - hangover_frames) : i]))
-            if not is_sp:
-                out_audio[i * n : (i + 1) * n] = 0.0
-        return out_audio.astype(np.float32)
+        if remove:
+            out_audio = np.concatenate(keep).astype(np.float32)
+            actual_retained_samples = len(out_audio)
+            completely_rejected = False
+        else:
+            out_audio = audio.copy()
+            speech_samples = 0
+            for i, f in enumerate(flags):
+                is_sp = f or (hangover_frames > 0 and any(flags[max(0, i - hangover_frames) : i]))
+                if not is_sp:
+                    out_audio[i * n : (i + 1) * n] = 0.0
+                else:
+                    speech_samples += n
+            actual_retained_samples = speech_samples
+            completely_rejected = False
 
-def apply_random_deletion(audio, target_removal_frac=0.3, frame_ms=30, sr=16000, seed=42):
+    meta = {
+        "actual_retained_samples": int(actual_retained_samples),
+        "completely_rejected": bool(completely_rejected),
+        "was_padded": len(out_audio) < min_samples or (actual_retained_samples == 0 and remove),
+        "duration_reduction_frac": float(np.clip(1.0 - actual_retained_samples / max(len(audio), 1), 0.0, 1.0)),
+        "retained_duration_ratio": float(np.clip(actual_retained_samples / max(len(audio), 1), 0.0, 1.0))
+    }
+    
+    if return_meta:
+        return out_audio, meta
+    return out_audio
+
+def apply_vad_with_meta(audio, sr=16000, mode=3, remove=True, hangover_frames=0):
+    """Convenience helper returning (audio, metadata)."""
+    return apply_vad(audio, sr=sr, mode=mode, remove=remove, hangover_frames=hangover_frames, return_meta=True)
+
+def apply_random_deletion(audio, target_removal_frac=0.3, frame_ms=30, sr=16000, seed=42, return_meta=False):
     """
-    Control condition: randomly deletes chunks of audio totaling target_removal_frac.
-    Matches the overall duration reduction of VAD while distributing deletions uniformly at random,
-    testing whether acoustic removal vs. structured speech-pause removal drives degradation.
+    Exploratory fixed-fraction control: randomly deletes chunks totaling target_removal_frac.
     """
     n = int(sr * frame_ms / 1000)
     num_frames = len(audio) // n
+    min_samples = int(sr * 0.4)
     if num_frames == 0:
-        return audio.copy()
+        meta = {
+            "actual_retained_samples": len(audio),
+            "completely_rejected": False,
+            "was_padded": len(audio) < min_samples,
+            "duration_reduction_frac": 0.0,
+            "retained_duration_ratio": 1.0
+        }
+        return (audio.copy(), meta) if return_meta else audio.copy()
     
     rng = np.random.RandomState(seed)
     num_to_remove = int(round(num_frames * target_removal_frac))
-    num_to_remove = max(0, min(num_frames - 1, num_to_remove))
+    num_to_remove = max(0, min(num_frames, num_to_remove))
     
     drop_indices = set(rng.choice(num_frames, size=num_to_remove, replace=False))
     keep = [audio[i * n : (i + 1) * n] for i in range(num_frames) if i not in drop_indices]
     
     if not keep:
-        min_samples = int(sr * 0.4)
-        return np.zeros(min_samples, dtype=np.float32)
-        
-    rem = audio[num_frames * n :]
-    kept_audio = np.concatenate(keep)
-    if len(rem) > 0:
-        kept_audio = np.concatenate([kept_audio, rem])
-    return kept_audio.astype(np.float32)
+        out_audio = np.zeros(min_samples, dtype=np.float32)
+        actual_retained_samples = 0
+        completely_rejected = True
+    else:
+        rem = audio[num_frames * n :]
+        kept_audio = np.concatenate(keep)
+        if len(rem) > 0:
+            kept_audio = np.concatenate([kept_audio, rem])
+        out_audio = kept_audio.astype(np.float32)
+        actual_retained_samples = len(out_audio)
+        completely_rejected = False
+
+    meta = {
+        "actual_retained_samples": int(actual_retained_samples),
+        "completely_rejected": bool(completely_rejected),
+        "was_padded": len(out_audio) < min_samples or completely_rejected,
+        "duration_reduction_frac": float(np.clip(1.0 - actual_retained_samples / max(len(audio), 1), 0.0, 1.0)),
+        "retained_duration_ratio": float(np.clip(actual_retained_samples / max(len(audio), 1), 0.0, 1.0))
+    }
+    if return_meta:
+        return out_audio, meta
+    return out_audio
+
+def apply_random_deletion_matched(audio, vad_silence_frac, frame_ms=30, sr=16000, seed=42, return_meta=False):
+    """
+    Per-clip duration-matched random deletion control:
+    Deletes the exact fraction of 30ms frames that VAD removed from this specific clip,
+    distributed uniformly at random using a deterministic seed.
+    """
+    return apply_random_deletion(
+        audio, target_removal_frac=vad_silence_frac, frame_ms=frame_ms, sr=sr, seed=seed, return_meta=return_meta
+    )
 
 def apply_endpoint_truncate(audio, sr=16000, silence_thresh_ms=800, mode=1, frame_ms=30):
     vad = webrtcvad.Vad(mode)
@@ -156,7 +213,18 @@ def apply_agc(audio, sr=16000, target_lufs=-23.0):
     except Exception:
         return audio
 
-def process_degradation(audio, condition, sr=16000):
+def process_degradation(audio, condition, sr=16000, clip_uid=None, vad_silence_frac=None):
+    import hashlib
+    seed = int(hashlib.md5((clip_uid or "default").encode()).hexdigest(), 16) % 100000 + 42 if clip_uid else 42
+    
+    meta = {
+        "actual_retained_samples": len(audio),
+        "completely_rejected": False,
+        "was_padded": False,
+        "duration_reduction_frac": 0.0,
+        "retained_duration_ratio": 1.0
+    }
+    
     if condition == "clean":
         deg = audio.astype(np.float32)
     elif condition == "opus_16k":
@@ -167,19 +235,21 @@ def process_degradation(audio, condition, sr=16000):
         # VoIP application mode in libopus
         deg = apply_opus(audio, sr, bitrate="16k", application="voip")
     elif condition == "vad_agg3":
-        deg = apply_vad(audio, sr, mode=3, remove=True)
+        deg, meta = apply_vad(audio, sr, mode=3, remove=True, return_meta=True)
     elif condition == "vad_mode1":
-        deg = apply_vad(audio, sr, mode=1, remove=True)
+        deg, meta = apply_vad(audio, sr, mode=1, remove=True, return_meta=True)
     elif condition == "vad_mode2":
-        deg = apply_vad(audio, sr, mode=2, remove=True)
+        deg, meta = apply_vad(audio, sr, mode=2, remove=True, return_meta=True)
     elif condition == "vad_hangover2":
-        deg = apply_vad(audio, sr, mode=3, remove=True, hangover_frames=2)
+        deg, meta = apply_vad(audio, sr, mode=3, remove=True, hangover_frames=2, return_meta=True)
     elif condition == "vad_zero":
-        deg = apply_vad(audio, sr, mode=3, remove=False)
+        deg, meta = apply_vad(audio, sr, mode=3, remove=False, return_meta=True)
     elif condition == "endpoint_800ms":
         deg = apply_endpoint_truncate(audio, sr, silence_thresh_ms=800, mode=1)
+        meta["actual_retained_samples"] = len(deg)
     elif condition == "endpoint_1200ms":
         deg = apply_endpoint_truncate(audio, sr, silence_thresh_ms=1200, mode=1)
+        meta["actual_retained_samples"] = len(deg)
     elif condition == "denoise":
         deg = apply_denoise(audio, sr)
     elif condition == "agc":
@@ -193,19 +263,26 @@ def process_degradation(audio, condition, sr=16000):
         a_den = apply_denoise(audio, sr)
         a_agc = apply_agc(a_den, sr, target_lufs=-23.0)
         a_opus = apply_opus(a_agc, sr, bitrate="16k", application="voip")
-        deg = apply_vad(a_opus, sr, mode=3, remove=True)
+        deg, meta = apply_vad(a_opus, sr, mode=3, remove=True, return_meta=True)
+    elif condition == "random_del_matched":
+        if vad_silence_frac is None:
+            _, v_meta = apply_vad(audio, sr, mode=3, remove=True, return_meta=True)
+            vad_silence_frac = v_meta["duration_reduction_frac"]
+        deg, meta = apply_random_deletion_matched(audio, vad_silence_frac=vad_silence_frac, sr=sr, seed=seed, return_meta=True)
     elif condition == "random_del_30pct":
-        deg = apply_random_deletion(audio, target_removal_frac=0.30, sr=sr, seed=42)
+        deg, meta = apply_random_deletion(audio, target_removal_frac=0.30, sr=sr, seed=seed, return_meta=True)
     elif condition.startswith("random_del_"):
         pct_str = condition.replace("random_del_", "").replace("pct", "")
         frac = float(pct_str) / 100.0
-        deg = apply_random_deletion(audio, target_removal_frac=frac, sr=sr, seed=42)
+        deg, meta = apply_random_deletion(audio, target_removal_frac=frac, sr=sr, seed=seed, return_meta=True)
     else:
         raise ValueError(f"Unknown condition: {condition}")
         
     deg_unpadded = deg.astype(np.float32)
     min_samples = int(sr * 0.4)
-    was_padded = len(deg_unpadded) < min_samples
+    was_padded = len(deg_unpadded) < min_samples or meta.get("completely_rejected", False)
+    meta["was_padded"] = was_padded
+    meta["actual_retained_samples"] = meta.get("actual_retained_samples", len(deg_unpadded))
     return deg_unpadded, was_padded
 
 def _frame_rms(x, sr, frame_ms):
@@ -214,7 +291,7 @@ def _frame_rms(x, sr, frame_ms):
         return np.array([])
     return np.array([np.sqrt(np.mean(x[i * n : (i + 1) * n] ** 2) + 1e-12) for i in range(len(x) // n)])
 
-def compute_silence_removal_statistic(clean, degraded, sr=16000, frame_ms=20):
+def compute_silence_removal_statistic(clean, degraded, sr=16000, frame_ms=20, actual_retained_samples=None):
     rms_c = _frame_rms(clean, sr, frame_ms)
     rms_d = _frame_rms(degraded, sr, frame_ms)
     if rms_c.size == 0:
@@ -222,9 +299,15 @@ def compute_silence_removal_statistic(clean, degraded, sr=16000, frame_ms=20):
     thr = max(0.01, float(np.percentile(rms_c, 30)))
     sil_c = (rms_c <= thr).sum() * frame_ms / 1000.0
     sil_d = (rms_d <= thr).sum() * frame_ms / 1000.0
+    
+    if actual_retained_samples is not None:
+        dur_loss = float(np.clip(1.0 - (actual_retained_samples / sr) / max(len(clean) / sr, 1e-6), 0.0, 1.0))
+    else:
+        dur_loss = float(np.clip(1.0 - (len(degraded) / sr) / max(len(clean) / sr, 1e-6), 0.0, 1.0))
+        
     return {
         "silence_removed_frac": float(np.clip(1.0 - sil_d / max(sil_c, 1e-6), 0.0, 1.0)),
-        "duration_reduction_frac": float(np.clip(1.0 - (len(degraded) / sr) / max(len(clean) / sr, 1e-6), 0.0, 1.0)),
+        "duration_reduction_frac": dur_loss,
         "silence_thresh": thr,
     }
 
