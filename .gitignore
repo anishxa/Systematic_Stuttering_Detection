@@ -7,3 +7,11 @@ cache/
 config.local.yaml
 results/out_of_fold_predictions.csv
 icassp2027_pdf-2.pdf
+
+# Reports and manuscript files
+*report*
+*manuscript*
+
+# LaTeX files and generators
+*.tex
+*latex*

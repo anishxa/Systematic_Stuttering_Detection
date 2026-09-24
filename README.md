@@ -122,19 +122,14 @@ python3 code/tests/test_regression.py
 python3 code/verify.py
 ```
 
-### Step 3: Recompute Bootstrap Confidence Intervals and LaTeX Tables
+### Step 3: Recompute Bootstrap Confidence Intervals
 
 If you want to re-run the 1,000 bootstrap resamples on the saved predictions:
 
 ```bash
 # Recompute bootstrap CIs from published out-of-fold predictions
 python3 code/compute_table_cis.py
-
-# Export clean, formatted LaTeX tables for the manuscript
-python3 code/export_latex_tables.py
 ```
-
-The resulting LaTeX code is saved to `results/tables_latex.txt`.
 
 ### Step 4: Run the Complete End-to-End Pipeline
 
@@ -169,7 +164,6 @@ What `main.py` does step-by-step:
 │   ├── figures.py                  # Publication PDF vector figure generation
 │   ├── main.py                     # Complete end-to-end evaluation pipeline
 │   ├── compute_table_cis.py        # Independent bootstrap CI computation script
-│   ├── export_latex_tables.py      # LaTeX table formatter
 │   ├── verify.py                   # Automated verification and consistency suite
 │   └── tests/
 │       └── test_regression.py      # 11 unit regression tests
@@ -184,8 +178,7 @@ What `main.py` does step-by-step:
 │   ├── nonlinear_baseline_comparison.csv # Linear probe vs 2-layer MLP head
 │   ├── severity_bias_results.json  # Automated severity bias and correlation
 │   ├── cross_show_layer_selection.json # Cross-show layer selection provenance
-│   ├── cross_show_results.json     # Held-out show generalization metrics
-│   └── tables_latex.txt            # Ready-to-paste LaTeX tables for manuscript
+│   └── cross_show_results.json     # Held-out show generalization metrics
 └── figure/                         # Publication PDF vector figures (FontType 42)
     ├── fig1_f1_by_condition.pdf
     ├── fig2_f1drop_vs_silence.pdf

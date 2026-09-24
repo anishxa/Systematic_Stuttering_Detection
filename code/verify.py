@@ -39,7 +39,6 @@ def run_verification(base_dir=None):
         os.path.join(results_dir, "cross_show_results.json"),
         os.path.join(results_dir, "cross_show_layer_selection.json"),
         os.path.join(results_dir, "selected_layers_by_fold.json"),
-        os.path.join(results_dir, "tables_latex.txt"),
         readme_path
     ]
     
@@ -51,7 +50,7 @@ def run_verification(base_dir=None):
     for art in required_artifacts:
         if not os.path.exists(art):
             raise FileNotFoundError(f"Missing required artifact: {art}")
-    print("[1/5] All 14 required results artifacts verified present.")
+    print("[1/5] All 13 required results artifacts verified present.")
     
     # 2. Verify publication figure PDFs and Type 3 font absence
     required_figures = [
