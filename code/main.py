@@ -197,7 +197,7 @@ def run_pipeline(config_path="config.yaml"):
     wall_clock["step3_feature_extraction"] = time.time() - t0
     
     # ---------------------------------------------------------
-    # STEP 4: Experiment A — Front-End Degradation & Mitigation
+    # STEP 4: Experiment A - Front-End Degradation & Mitigation
     # ---------------------------------------------------------
     t0 = time.time()
     print("\n[STEP 4] Executing Experiment A (Comprehensive Degradation, Multi-Threshold & Calibration)...")
@@ -683,18 +683,18 @@ def run_pipeline(config_path="config.yaml"):
             calib_rows.append({"condition": cond, "class": c, "ece": float(ece_val), "brier": float(brier_val)})
     pd.DataFrame(calib_rows).to_csv(os.path.join(results_dir, "calibration_summary.csv"), index=False)
     
-    # Non-linear MLP comparison across clean and degraded conditions
+    # Non-linear MLP comparison across clean and degraded conditions (Pooled Predictions)
     nl_rows = []
     compare_conds = [c for c in ["clean", "full_chain", "vad_agg3", "opus_16k_voip", "full_chain_novad"] if c in conditions]
     for cond in compare_conds:
         for c in target_cols:
-            lin_exp = "clean_baseline" if cond == "clean" else "deployment_fixed"
-            mlp_exp = "clean_mlp_baseline" if cond == "clean" else "mlp_head_degraded"
+            lin_sub = df_oof[(df_oof["condition"] == cond) & (df_oof["threshold_policy"] == "fixed_0.5") & (df_oof["class"] == c)]
+            mlp_sub = df_oof[(df_oof["condition"] == cond) & (df_oof["threshold_policy"] == "mlp_head") & (df_oof["class"] == c)]
             
-            lin_f1 = df_tidy[(df_tidy["experiment"] == lin_exp) & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
-            lin_auc = df_tidy[(df_tidy["experiment"] == lin_exp) & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "auc")]["value"].mean()
-            mlp_f1 = df_tidy[(df_tidy["experiment"] == mlp_exp) & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "f1")]["value"].mean()
-            mlp_auc = df_tidy[(df_tidy["experiment"] == mlp_exp) & (df_tidy["condition"] == cond) & (df_tidy["class"] == c) & (df_tidy["metric"] == "auc")]["value"].mean()
+            lin_f1 = f1_score(lin_sub["y_true"].values, lin_sub["y_pred"].values, zero_division=0)
+            lin_auc = roc_auc_score(lin_sub["y_true"].values, lin_sub["y_prob"].values) if len(np.unique(lin_sub["y_true"].values)) > 1 else np.nan
+            mlp_f1 = f1_score(mlp_sub["y_true"].values, mlp_sub["y_pred"].values, zero_division=0)
+            mlp_auc = roc_auc_score(mlp_sub["y_true"].values, mlp_sub["y_prob"].values) if len(np.unique(mlp_sub["y_true"].values)) > 1 else np.nan
             
             nl_rows.append({
                 "condition": cond, "class": c,
@@ -762,7 +762,7 @@ def run_pipeline(config_path="config.yaml"):
     wall_clock["step4_experiment_A"] = time.time() - t0
     
     # ---------------------------------------------------------
-    # STEP 5: Experiment B — Automated Dysfluency Index / Severity Bias
+    # STEP 5: Experiment B - Automated Dysfluency Index / Severity Bias
     # ---------------------------------------------------------
     t0 = time.time()
     print("\n[STEP 5] Executing Experiment B (Automated Dysfluency Index / Severity Bias)...")
@@ -803,7 +803,7 @@ def run_pipeline(config_path="config.yaml"):
     
     # ---------------------------------------------------------
     # ---------------------------------------------------------
-    # STEP 6: Experiment C — Cross-Show Generalization
+    # STEP 6: Experiment C - Cross-Show Generalization
     # ---------------------------------------------------------
     t0 = time.time()
     print("\n[STEP 6] Executing Experiment C (Cross-Show Generalization)...")

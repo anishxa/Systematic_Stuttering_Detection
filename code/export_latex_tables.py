@@ -90,10 +90,10 @@ def generate_latex():
         f.write("% TABLE III: Mitigation under full chain (Pooled Out-of-Fold Predictions)\n")
         f.write("% ==========================================================\n")
         f.write("\\begin{table}[t]\n\\centering\n\\small\n")
-        f.write("\\caption{Mitigation strategies under full deployment chain evaluated consistently from pooled out-of-fold predictions. Recovery is relative to fixed clean baseline. Note that Deg-Val threshold tuning yields high recall (0.962 for Block) but degraded precision (0.468) without restoring ranking discrimination.}\n")
+        f.write("\\caption{Mitigation strategies under full deployment chain evaluated consistently from pooled out-of-fold predictions. Deg-Val Recovery and Matched Recovery are both relative to the fixed clean baseline. Note that Deg-Val threshold tuning yields high recall (0.962 for Block) but degraded precision (0.468) without restoring ranking discrimination.}\n")
         f.write("\\label{tab:table3}\n")
-        f.write("\\begin{tabular}{lcccccc}\n\\toprule\n")
-        f.write("Class & Clean (Fixed) & Clean (Tuned) & Degr. Unmit. & Deg-Val Tuned & Matched (Tuned) & Recovery \\\\\n\\midrule\n")
+        f.write("\\begin{tabular}{lccccccc}\n\\toprule\n")
+        f.write("Class & Clean (Fixed) & Clean (Tuned) & Degr. Unmit. & Deg-Val Tuned & Matched (Tuned) & Deg-Val Rec. & Matched Rec. \\\\\n\\midrule\n")
         
         fc_t3 = t3[t3["condition"] == "full_chain"]
         for c in target_cols:
@@ -103,8 +103,9 @@ def generate_latex():
             d_f1 = r["unmitigated_f1"]
             dv_f1 = r["deg_val_tuned_f1"]
             m_f1 = r["matched_retraining_val_f1"]
-            rec = r["recovery_pct"]
-            f.write(f"{c:12s} & {c_f1:.3f} & {ct_f1:.3f} & {d_f1:.3f} & {dv_f1:.3f} & {m_f1:.3f} & {rec:.1f}\\% \\\\\n")
+            dv_rec = r["recovery_pct_deg_val"]
+            m_rec = r["recovery_pct"]
+            f.write(f"{c:12s} & {c_f1:.3f} & {ct_f1:.3f} & {d_f1:.3f} & {dv_f1:.3f} & {m_f1:.3f} & {dv_rec:.1f}\\% & {m_rec:.1f}\\% \\\\\n")
         f.write("\\bottomrule\n\\end{tabular}\n\\end{table}\n")
 
     print(f"Saved updated {out_file}")

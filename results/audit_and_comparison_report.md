@@ -17,8 +17,10 @@ Key Corrections Completed:
 2. **Table III Statistical Consistency**: Table III regenerated strictly from pooled out-of-fold predictions matching Table I. Included clean validation-tuned baseline ($F_1 = 0.668$). Documented that degraded-validation threshold tuning yields high recall ($0.962$) but poor precision ($0.468$), and ROC-AUC remains unchanged ($0.620$ vs clean $0.724$).
 3. **Over-Claim Removal**: 
    - Replaced causal "speech-pause boundary mechanism" assertions with empirical evidence: VAD-selected silence excision is substantially more damaging than duration-matched random deletion ($F_1 = 0.518$ vs $0.627$).
+   - Documented that 16-kbit/s Opus had small effects under the evaluated conditions ($|\Delta F_1| \le 0.005$) and was statistically equivalent to clean audio within a $\pm 0.02$ TOST margin.
    - Distinguished full deployment chain drop ($0.638 \rightarrow 0.465$, $-27.1\%$) from VAD alone ($0.638 \rightarrow 0.518$, $-18.8\%$).
-   - Replaced "confirms acoustic/structural information loss" with persistence across classifier heads.
+   - Noted that grouping by episode prevents episode overlap; speakers may recur across episodes.
+   - Clarified that full degradation reduces the episode-level predicted dysfluency index relative to clean predictions by $-9.38\%$.
    - Reframed universal clinical mandates into telepractice architectural considerations.
 4. **Consistency & Reproducibility**:
    - Aligned MLP head architecture description to match code: 2-layer MLP with hidden layer sizes $(128, 32)$, ReLU activation, and early stopping without dropout.
@@ -32,7 +34,7 @@ Key Corrections Completed:
 ## Part 1: Leakage-Free Nested Layer Selection
 
 ### 1. Primary 5-Fold Episode-Disjoint CV
-For each outer fold $k \in \{0..4\}$, inner 4-fold cross-validation was conducted strictly across the remaining folds in $T_k$. Outer test fold $k$ was completely unobserved.
+For each outer fold $k \in \{0..4\}$, inner 4-fold cross-validation was conducted strictly across the remaining folds in $T_k$. Outer test fold $k$ was completely unobserved. Grouping by episode prevents episode overlap; speakers may recur across episodes.
 - **Outer Fold 0**: Selected Layer 10 (Inner CV Macro $F_1 = 0.6671$)
 - **Outer Fold 1**: Selected Layer 8 (Inner CV Macro $F_1 = 0.6558$)
 - **Outer Fold 2**: Selected Layer 9 (Inner CV Macro $F_1 = 0.6624$)
@@ -114,15 +116,15 @@ The cohort consists of 1,500 fluent clips and 6,500 dysfluent clips from 241 epi
 ### Table III: Comprehensive Mitigation Summary (Pooled Predictions)
 *Evaluated strictly on pooled out-of-fold predictions under full_chain deployment.*
 
-| Class | Clean Fixed ($F_1$ / P / R / AUC) | Clean Tuned ($F_1$ / P / R) | Degr. Unmit. ($F_1$ / P / R / AUC) | Clean-Val Tuned ($F_1$ / P / R) | Deg-Val Tuned ($F_1$ / P / R / AUC) | Matched Tuned ($F_1$ / P / R / AUC) | Recovery (%) |
+| Class | Clean Fixed ($F_1$ / P / R / AUC) | Clean Tuned ($F_1$ / P / R) | Degr. Unmit. ($F_1$ / P / R / AUC) | Clean-Val Tuned ($F_1$ / P / R) | Deg-Val Tuned ($F_1$ / P / R / AUC) | Matched Tuned ($F_1$ / P / R / AUC) | Deg-Val Rec. (%) | Matched Rec. (%) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Block** | 0.638 / 0.634 / 0.641 / 0.724 | 0.668 / 0.563 / 0.822 | 0.465 / 0.609 / 0.376 / 0.620 | 0.561 / 0.541 / 0.583 | 0.630 / 0.468 / 0.962 / 0.620 | 0.628 / 0.481 / 0.905 / 0.633 | **94.2%** |
-| **Prolongation** | 0.624 / 0.582 / 0.672 / 0.789 | 0.618 / 0.526 / 0.749 | 0.593 / 0.573 / 0.615 / 0.757 | 0.597 / 0.547 / 0.656 | 0.604 / 0.528 / 0.706 / 0.757 | 0.594 / 0.490 / 0.755 / 0.755 | **1.5%** |
-| **SoundRep** | 0.659 / 0.608 / 0.718 / 0.844 | 0.657 / 0.604 / 0.721 | 0.570 / 0.574 / 0.567 / 0.761 | 0.570 / 0.573 / 0.566 | 0.579 / 0.512 / 0.665 / 0.761 | 0.595 / 0.531 / 0.677 / 0.786 | **28.1%** |
-| **WordRep** | 0.645 / 0.578 / 0.730 / 0.851 | 0.643 / 0.598 / 0.696 | 0.572 / 0.448 / 0.800 / 0.823 | 0.577 / 0.463 / 0.765 | 0.607 / 0.573 / 0.645 / 0.823 | 0.636 / 0.588 / 0.692 / 0.840 | **87.7%** |
-| **Interjection** | 0.756 / 0.777 / 0.737 / 0.866 | 0.757 / 0.755 / 0.760 | 0.734 / 0.740 / 0.728 / 0.846 | 0.732 / 0.729 / 0.736 | 0.734 / 0.738 / 0.730 / 0.846 | 0.740 / 0.746 / 0.735 / 0.847 | **29.8%** |
+| **Block** | 0.638 / 0.634 / 0.641 / 0.724 | 0.668 / 0.563 / 0.822 | 0.465 / 0.609 / 0.376 / 0.620 | 0.561 / 0.541 / 0.583 | 0.630 / 0.468 / 0.962 / 0.620 | 0.628 / 0.481 / 0.905 / 0.633 | **95.3%** | **94.2%** |
+| **Prolongation** | 0.624 / 0.582 / 0.672 / 0.789 | 0.618 / 0.526 / 0.749 | 0.593 / 0.573 / 0.615 / 0.757 | 0.597 / 0.547 / 0.656 | 0.604 / 0.528 / 0.706 / 0.757 | 0.594 / 0.490 / 0.755 / 0.755 | **35.2%** | **1.5%** |
+| **SoundRep** | 0.659 / 0.608 / 0.718 / 0.844 | 0.657 / 0.604 / 0.721 | 0.570 / 0.574 / 0.567 / 0.761 | 0.570 / 0.573 / 0.566 | 0.579 / 0.512 / 0.665 / 0.761 | 0.595 / 0.531 / 0.677 / 0.786 | **9.5%** | **28.1%** |
+| **WordRep** | 0.645 / 0.578 / 0.730 / 0.851 | 0.643 / 0.598 / 0.696 | 0.572 / 0.448 / 0.800 / 0.823 | 0.577 / 0.463 / 0.765 | 0.607 / 0.573 / 0.645 / 0.823 | 0.636 / 0.588 / 0.692 / 0.840 | **47.8%** | **87.7%** |
+| **Interjection** | 0.756 / 0.777 / 0.737 / 0.866 | 0.757 / 0.755 / 0.760 | 0.734 / 0.740 / 0.728 / 0.846 | 0.732 / 0.729 / 0.736 | 0.734 / 0.738 / 0.730 / 0.846 | 0.740 / 0.746 / 0.735 / 0.847 | **1.6%** | **29.8%** |
 
-> **Critical Methodological Note on Threshold Tuning**: While degraded-validation tuning yields $F_1 = 0.630$ for Block, it achieves this with precision $0.468$ and recall $0.962$ by lowering the classification threshold. Ranking discrimination (ROC-AUC) remains unrecovered ($0.620$ vs clean $0.724$). Recovered $F_1$ does not equal restored discrimination or balanced error rates.
+> **Critical Methodological Note on Threshold Tuning**: Both recovery percentages use the fixed-threshold clean baseline ($0.638$) as reference. Degraded-validation tuning yields Block $F_1 = 0.630$ ($95.3\%$ recovery), while matched retraining plus threshold tuning yields $F_1 = 0.628$ ($94.2\%$ recovery). However, this recovery is driven almost entirely by aggressive positive classification (recall surges to $0.962$ while precision drops to $0.468$), and ranking discrimination remains unrecovered (ROC-AUC remains $0.620$ vs clean $0.724$). Recovered $F_1$ does not equal restored discrimination or balanced error rates.
 
 ---
 
@@ -133,17 +135,17 @@ The cohort consists of 1,500 fluent clips and 6,500 dysfluent clips from 241 epi
 
 | Condition | Class | Linear Probe $F_1$ | Linear Probe AUC | 2-Layer MLP $F_1$ | 2-Layer MLP AUC | $\Delta F_1$ (MLP - Linear) |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **clean** | Block | 0.638 | 0.724 | 0.624 | 0.726 | $-0.014$ |
-| **clean** | SoundRep | 0.659 | 0.844 | 0.607 | 0.843 | $-0.052$ |
-| **full_chain** | Block | 0.465 | 0.620 | 0.373 | 0.625 | $-0.092$ |
-| **full_chain** | SoundRep | 0.570 | 0.761 | 0.479 | 0.768 | $-0.091$ |
-| **vad_agg3** | Block | 0.518 | 0.652 | 0.458 | 0.658 | $-0.060$ |
-| **full_chain_novad** | Block | 0.539 | 0.697 | 0.495 | 0.701 | $-0.044$ |
+| **clean** | Block | 0.638 | 0.724 | 0.624 | 0.725 | $-0.014$ |
+| **clean** | SoundRep | 0.659 | 0.844 | 0.608 | 0.842 | $-0.051$ |
+| **full_chain** | Block | 0.465 | 0.620 | 0.383 | 0.626 | $-0.082$ |
+| **full_chain** | SoundRep | 0.570 | 0.761 | 0.482 | 0.757 | $-0.088$ |
+| **vad_agg3** | Block | 0.518 | 0.653 | 0.466 | 0.656 | $-0.052$ |
+| **full_chain_novad** | Block | 0.539 | 0.697 | 0.500 | 0.695 | $-0.039$ |
 
 Performance degradation persists across both linear probes and 2-layer MLP classifier heads.
 
 ### Experiment B: Automated Dysfluency Index
-- Relative severity underestimation across episodes vs clean audio: **$-9.38\%$** (95% CI: $[-12.35\%, -6.18\%]$).
+- Relative dysfluency index shift across episodes vs clean audio: full front-end degradation reduces the episode-level predicted dysfluency index relative to clean predictions by **$-9.38\%$** (95% CI: $[-12.35\%, -6.18\%]$).
 - Correlation with ground truth block density: $r = -0.2035$ ($p = 0.0015$); Spearman $\rho = -0.1957$ ($p = 0.0023$).
 
 ### Experiment C: Cross-Show Held-Out Performance (*HVSA* & *MyStutteringLife*)

@@ -108,6 +108,7 @@ def run_verification(base_dir=None):
     assert np.isclose(fc_blk_t3["deg_val_tuned_f1"], 0.630, atol=0.005)
     assert np.isclose(fc_blk_t3["matched_retraining_val_f1"], 0.628, atol=0.005)
     assert np.isclose(fc_blk_t3["recovery_pct"], 94.2, atol=0.5)
+    assert np.isclose(fc_blk_t3["recovery_pct_deg_val"], 95.3, atol=0.5)
     
     with open(os.path.join(results_dir, "cross_show_layer_selection.json")) as f:
         cs_meta = json.load(f)
@@ -118,7 +119,7 @@ def run_verification(base_dir=None):
         cs_res = json.load(f)
     assert np.isclose(cs_res["Block"]["clean_f1"], 0.667, atol=0.005)
     assert np.isclose(cs_res["Block"]["full_chain_f1"], 0.453, atol=0.005)
-    print(f"[5/5] Table III & Cross-Show verified: Block Recovery = {fc_blk_t3['recovery_pct']:.1f}%, Cross-Show Layer = 9, Drop = {cs_res['Block']['f1_drop']:.3f}.")
+    print(f"[5/5] Table III & Cross-Show verified: Deg-Val Recovery = {fc_blk_t3['recovery_pct_deg_val']:.1f}%, Matched Recovery = {fc_blk_t3['recovery_pct']:.1f}%, Cross-Show Layer = 9, Drop = {cs_res['Block']['f1_drop']:.3f}.")
     
     print("\n" + "=" * 65)
     print("      ALL VERIFICATION CHECKS PASSED PERFECTLY!                 ")
